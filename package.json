@@ -1,0 +1,27 @@
+{
+  "name": "ai-tavern-split-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI tavern style split frontend/backend project with user and admin portals.",
+  "workspaces": [
+    "backend",
+    "frontend-user",
+    "frontend-admin"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev -w backend",
+    "dev:user": "npm run dev -w frontend-user",
+    "dev:admin": "npm run dev -w frontend-admin",
+    "dev": "npm run dev:backend",
+    "db:init": "npm run db:init -w backend",
+    "deploy:mac": "bash scripts/deploy-mac.sh",
+    "deploy:debian12": "bash scripts/deploy-debian12.sh",
+    "start:mac": "bash scripts/start-mac.sh",
+    "start:debian12": "bash scripts/start-debian12.sh",
+    "run:mac": "bash scripts/start-mac.sh",
+    "run:debian12": "bash scripts/start-debian12.sh",
+    "security:reset": "node scripts/security-reset.mjs",
+    "build": "npm run build -w frontend-user && npm run build -w frontend-admin",
+    "start": "npm run start -w backend"
+  }
+}
