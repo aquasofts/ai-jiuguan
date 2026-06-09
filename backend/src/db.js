@@ -117,6 +117,7 @@ function createSchema(db) {
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       thinking TEXT,
+      thinkingDurationMs INTEGER,
       attachments TEXT,
       requestSnapshot TEXT,
       usage TEXT,
@@ -152,6 +153,7 @@ function createSchema(db) {
   `);
   ensureColumn(db, "messages", "attachments", "TEXT");
   ensureColumn(db, "messages", "thinking", "TEXT");
+  ensureColumn(db, "messages", "thinkingDurationMs", "INTEGER");
   ensureColumn(db, "messages", "requestSnapshot", "TEXT");
   ensureColumn(db, "apiKeys", "reasoningEffort", "TEXT NOT NULL DEFAULT ''");
 }
@@ -242,8 +244,8 @@ function insertSnapshot(db, snapshot) {
     }
 
     const insertMessage = db.prepare(`
-      INSERT INTO messages (id, sessionId, userId, characterId, role, content, thinking, attachments, requestSnapshot, usage, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (id, sessionId, userId, characterId, role, content, thinking, thinkingDurationMs, attachments, requestSnapshot, usage, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const message of data.messages || []) {
       insertMessage.run(
@@ -254,6 +256,7 @@ function insertSnapshot(db, snapshot) {
         message.role,
         message.content || "",
         message.thinking || "",
+        message.thinkingDurationMs === null || message.thinkingDurationMs === undefined ? null : Math.max(0, Math.round(Number(message.thinkingDurationMs) || 0)),
         message.attachments ? JSON.stringify(message.attachments) : null,
         message.requestSnapshot ? JSON.stringify(message.requestSnapshot) : null,
         message.usage ? JSON.stringify(message.usage) : null,
@@ -329,6 +332,7 @@ export function readDb() {
     sessions: db.prepare("SELECT * FROM sessions").all(),
     messages: db.prepare("SELECT * FROM messages").all().map((message) => ({
       ...message,
+      thinkingDurationMs: message.thinkingDurationMs === null || message.thinkingDurationMs === undefined ? null : Number(message.thinkingDurationMs || 0),
       attachments: message.attachments ? JSON.parse(message.attachments) : [],
       requestSnapshot: message.requestSnapshot ? JSON.parse(message.requestSnapshot) : null,
       usage: message.usage ? JSON.parse(message.usage) : null

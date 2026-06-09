@@ -16,6 +16,7 @@ const MAX_IMAGE_DATA_URL_CHARS = 1500000;
 const MAX_IMAGE_EDGE = 1600;
 const IMAGE_QUALITY = 0.82;
 const THINKING_STEPS = ["理解上下文", "读取附件", "组织回复"];
+const THINKING_PREVIEW_LINES = 6;
 
 function ThinkingPanel({ compact = false }) {
   return (
@@ -68,6 +69,28 @@ function splitThinkingContent(content = "") {
   };
 }
 
+function thinkingTextFromParts(parts = []) {
+  return parts
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function latestThinkingPreview(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const preview = lines.slice(-THINKING_PREVIEW_LINES).join("\n").trimStart();
+  return preview.length > 1200 ? preview.slice(-1200) : preview;
+}
+
+function formatThinkingElapsed(ms) {
+  const number = Number(ms);
+  if (!Number.isFinite(number) || number <= 0) return "0秒";
+  const seconds = number / 1000;
+  if (seconds < 10) return `${seconds.toFixed(1).replace(/\.0$/, "")}秒`;
+  return `${Math.round(seconds)}秒`;
+}
+
 function MarkdownContent({ children }) {
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
@@ -80,19 +103,22 @@ function MarkdownContent({ children }) {
   );
 }
 
-function ThinkingTrace({ thoughts, streaming = false }) {
-  const text = thoughts.filter(Boolean).join("\n\n");
+function ThinkingTrace({ thoughts, streaming = false, elapsedMs = null }) {
+  const text = thinkingTextFromParts(thoughts);
   if (!text) return <ThinkingPanel compact />;
+  const visibleText = streaming ? latestThinkingPreview(text) : text;
+  const summary = streaming ? "思考过程" : `思考结束，已思考${formatThinkingElapsed(elapsedMs)}`;
 
   return (
-    <details className={`thinking-trace ${streaming ? "streaming" : ""}`} open>
+    <details className={`thinking-trace ${streaming ? "streaming" : "collapsed"}`} open={streaming}>
       <summary>
         <BrainCircuit size={15} />
-        <span>思考过程</span>
+        <span>{summary}</span>
         {streaming && <small>生成中</small>}
       </summary>
       <div className="thinking-trace-body">
-        <MarkdownContent>{text}</MarkdownContent>
+        <MarkdownContent>{visibleText}</MarkdownContent>
+        {streaming && <span className="thinking-flow-caret" aria-hidden="true" />}
       </div>
     </details>
   );
@@ -104,12 +130,23 @@ function MessageMarkdown({ message }) {
     : { thoughts: [], answer: String(message.content || "") };
   const thoughts = [message.thinking, ...parsed.thoughts].filter((item) => String(item || "").trim());
   const hasAnswer = Boolean(parsed.answer);
+  const hasThoughts = thoughts.length > 0;
+  const thinkingStreaming = message.loading && hasThoughts && !hasAnswer && !message.thinkingFinished;
+  const elapsedMs = message.thinkingDurationMs ?? (
+    message.thinkingStartedAt && message.thinkingEndedAt ? message.thinkingEndedAt - message.thinkingStartedAt : null
+  );
+
+  if (message.loading && !hasThoughts && !hasAnswer) return <ThinkingPanel />;
 
   return (
     <div className={message.loading ? "streaming-markdown" : ""}>
-      {thoughts.length > 0 && <ThinkingTrace thoughts={thoughts} streaming={message.loading && !hasAnswer} />}
-      {hasAnswer && <MarkdownContent>{parsed.answer}</MarkdownContent>}
-      {message.loading && <span className="stream-caret" aria-hidden="true" />}
+      {hasThoughts && <ThinkingTrace thoughts={thoughts} streaming={thinkingStreaming} elapsedMs={elapsedMs} />}
+      {hasAnswer && (
+        <div className={message.loading ? "answer-stream" : "answer-content"}>
+          <MarkdownContent>{parsed.answer}</MarkdownContent>
+          {message.loading && <span className="stream-caret" aria-hidden="true" />}
+        </div>
+      )}
     </div>
   );
 }
@@ -135,6 +172,7 @@ function App() {
   const [processingFiles, setProcessingFiles] = React.useState(false);
   const [notice, setNotice] = React.useState("");
   const [dragActive, setDragActive] = React.useState(false);
+  const messagesRef = React.useRef(null);
   const messagesEndRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const dragDepthRef = React.useRef(0);
@@ -181,8 +219,20 @@ function App() {
     setAuthOpen(true);
   }
 
-  React.useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  React.useLayoutEffect(() => {
+    const node = messagesRef.current;
+    if (!node) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      return undefined;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      node.scrollTo({
+        top: node.scrollHeight,
+        behavior: streaming || messages.some((message) => message.loading) ? "auto" : "smooth"
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [messages, streaming]);
 
   React.useEffect(() => {
@@ -673,6 +723,10 @@ function App() {
       role: "assistant",
       content: "",
       thinking: "",
+      thinkingStartedAt: Date.now(),
+      thinkingEndedAt: null,
+      thinkingDurationMs: null,
+      thinkingFinished: false,
       loading: true,
       createdAt: new Date().toISOString()
     };
@@ -713,17 +767,56 @@ function App() {
           const dataLine = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
           const data = dataLine ? JSON.parse(dataLine) : {};
           if (eventName === "thinking") {
-            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? { ...item, thinking: `${item.thinking || ""}${data.delta || ""}` } : item));
+            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? {
+              ...item,
+              thinkingStartedAt: item.thinkingStartedAt || Date.now(),
+              thinking: `${item.thinking || ""}${data.delta || ""}`,
+              thinkingFinished: false
+            } : item));
+          }
+          if (eventName === "thinking-done") {
+            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? {
+              ...item,
+              thinkingEndedAt: Date.now(),
+              thinkingDurationMs: Math.max(0, Number(data.elapsedMs ?? 0)),
+              thinkingFinished: true
+            } : item));
           }
           if (eventName === "delta") {
-            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? { ...item, content: item.content + data.delta } : item));
+            setMessages((items) => items.map((item) => {
+              if (item.id !== localAssistantMessage.id) return item;
+              const nowMs = Date.now();
+              const nextContent = `${item.content || ""}${data.delta || ""}`;
+              const hasInlineThinking = /<think\b/i.test(nextContent);
+              const inlineThinkingFinished = hasInlineThinking && /<\/think>/i.test(nextContent);
+              const shouldFinishThinking = (Boolean(item.thinking) || inlineThinkingFinished) && !item.thinkingFinished;
+              return {
+                ...item,
+                content: nextContent,
+                thinkingStartedAt: hasInlineThinking ? (item.thinkingStartedAt || nowMs) : item.thinkingStartedAt,
+                thinkingEndedAt: shouldFinishThinking ? nowMs : item.thinkingEndedAt,
+                thinkingDurationMs: shouldFinishThinking ? Math.max(0, nowMs - (item.thinkingStartedAt || nowMs)) : item.thinkingDurationMs,
+                thinkingFinished: shouldFinishThinking ? true : item.thinkingFinished
+              };
+            }));
           }
           if (eventName === "error") {
             setNotice(data.message);
             setMessages((items) => items.filter((item) => item.id !== localAssistantMessage.id));
           }
           if (eventName === "done") {
-            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? { ...data.message, thinking: data.message?.thinking || item.thinking || "" } : item));
+            setMessages((items) => items.map((item) => {
+              if (item.id !== localAssistantMessage.id) return item;
+              const thinking = data.message?.thinking || item.thinking || "";
+              const fallbackDuration = thinking ? Math.max(0, (item.thinkingEndedAt || Date.now()) - (item.thinkingStartedAt || Date.now())) : null;
+              return {
+                ...data.message,
+                thinking,
+                thinkingDurationMs: data.message?.thinkingDurationMs ?? item.thinkingDurationMs ?? fallbackDuration,
+                thinkingFinished: Boolean(thinking),
+                loading: false
+              };
+            }));
             setUser((current) => current ? { ...current, balance: data.balance } : current);
           }
         }
@@ -844,7 +937,7 @@ function App() {
           </div>
         </header>
 
-        <section className="messages" aria-live="polite">
+        <section className="messages" ref={messagesRef} aria-live="polite">
           {notice && <div className="notice">{notice}</div>}
           {messages.length === 0 ? (
             <div className="welcome">
@@ -853,9 +946,8 @@ function App() {
               <p>选择角色卡后发送消息；不同角色卡的会话历史会互相隔离。</p>
             </div>
           ) : messages.map((message) => {
-            const body = message.loading && !message.content ? <ThinkingPanel /> : (
+            const body = (
               <>
-                {message.loading && message.content && <ThinkingPanel compact />}
                 {message.attachments?.length > 0 && (
                   <div className="attachment-list">
                     {message.attachments.map((file) => (
@@ -866,7 +958,7 @@ function App() {
                     ))}
                   </div>
                 )}
-                {message.content || message.thinking ? <MessageMarkdown message={message} /> : null}
+                {message.loading || message.content || message.thinking ? <MessageMarkdown message={message} /> : null}
               </>
             );
 
