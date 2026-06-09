@@ -176,6 +176,8 @@ function App() {
   const messagesEndRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const dragDepthRef = React.useRef(0);
+  const streamFrameRef = React.useRef(0);
+  const streamPatchRef = React.useRef(null);
 
   const selectedCharacter = characters.find((item) => item.id === selectedCharacterId) || characters[0];
   const mobileMenuVisible = mobileMenuOpen || mobileMenuClosing;
@@ -219,6 +221,92 @@ function App() {
     setAuthOpen(true);
   }
 
+  function clearStreamFrame() {
+    if (streamFrameRef.current) {
+      window.cancelAnimationFrame(streamFrameRef.current);
+      streamFrameRef.current = 0;
+    }
+    streamPatchRef.current = null;
+  }
+
+  function flushStreamPatch(assistantMessageId) {
+    if (streamFrameRef.current) {
+      window.cancelAnimationFrame(streamFrameRef.current);
+      streamFrameRef.current = 0;
+    }
+    const patch = streamPatchRef.current;
+    streamPatchRef.current = null;
+    if (!patch) return;
+    applyStreamPatch(assistantMessageId, patch);
+  }
+
+  function applyStreamPatch(assistantMessageId, patch) {
+    setMessages((items) => {
+      if (patch.remove) return items.filter((item) => item.id !== assistantMessageId);
+      return items.map((item) => {
+        if (item.id !== assistantMessageId) return item;
+
+        if (patch.finalMessage) {
+          const thinking = patch.finalMessage.thinking || `${item.thinking || ""}${patch.thinkingDelta || ""}`;
+          const fallbackDuration = thinking ? Math.max(0, (item.thinkingEndedAt || Date.now()) - (item.thinkingStartedAt || Date.now())) : null;
+          return {
+            ...patch.finalMessage,
+            thinking,
+            thinkingDurationMs: patch.finalMessage.thinkingDurationMs ?? item.thinkingDurationMs ?? fallbackDuration,
+            thinkingFinished: Boolean(thinking),
+            loading: false
+          };
+        }
+
+        const nowMs = Date.now();
+        const nextThinking = `${item.thinking || ""}${patch.thinkingDelta || ""}`;
+        const nextContent = `${item.content || ""}${patch.contentDelta || ""}`;
+        const hasInlineThinking = /<think\b/i.test(nextContent);
+        const inlineThinkingFinished = hasInlineThinking && /<\/think>/i.test(nextContent);
+        const shouldFinishThinking = !item.thinkingFinished && (
+          patch.thinkingDone || (Boolean(patch.contentDelta) && (Boolean(nextThinking) || inlineThinkingFinished))
+        );
+
+        return {
+          ...item,
+          content: nextContent,
+          thinking: nextThinking,
+          thinkingStartedAt: (patch.thinkingDelta || hasInlineThinking) ? (item.thinkingStartedAt || nowMs) : item.thinkingStartedAt,
+          thinkingEndedAt: shouldFinishThinking ? nowMs : item.thinkingEndedAt,
+          thinkingDurationMs: shouldFinishThinking ? Math.max(0, Number(patch.elapsedMs ?? (nowMs - (item.thinkingStartedAt || nowMs)))) : item.thinkingDurationMs,
+          thinkingFinished: shouldFinishThinking ? true : item.thinkingFinished
+        };
+      });
+    });
+  }
+
+  function enqueueStreamPatch(assistantMessageId, patch) {
+    const pending = streamPatchRef.current || {
+      thinkingDelta: "",
+      contentDelta: "",
+      thinkingDone: false,
+      elapsedMs: null,
+      finalMessage: null,
+      remove: false
+    };
+    if (patch.thinkingDelta) pending.thinkingDelta += patch.thinkingDelta;
+    if (patch.contentDelta) pending.contentDelta += patch.contentDelta;
+    if (patch.thinkingDone) pending.thinkingDone = true;
+    if (patch.elapsedMs !== undefined) pending.elapsedMs = patch.elapsedMs;
+    if (patch.finalMessage) pending.finalMessage = patch.finalMessage;
+    if (patch.remove) pending.remove = true;
+    streamPatchRef.current = pending;
+
+    if (!streamFrameRef.current) {
+      streamFrameRef.current = window.requestAnimationFrame(() => {
+        streamFrameRef.current = 0;
+        const framePatch = streamPatchRef.current;
+        streamPatchRef.current = null;
+        if (framePatch) applyStreamPatch(assistantMessageId, framePatch);
+      });
+    }
+  }
+
   React.useLayoutEffect(() => {
     const node = messagesRef.current;
     if (!node) {
@@ -240,6 +328,8 @@ function App() {
     const timeout = window.setTimeout(() => setMobileMenuClosing(false), 190);
     return () => window.clearTimeout(timeout);
   }, [mobileMenuClosing]);
+
+  React.useEffect(() => clearStreamFrame, []);
 
   React.useEffect(() => {
     if (!mobileMenuVisible) return undefined;
@@ -767,61 +857,31 @@ function App() {
           const dataLine = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
           const data = dataLine ? JSON.parse(dataLine) : {};
           if (eventName === "thinking") {
-            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? {
-              ...item,
-              thinkingStartedAt: item.thinkingStartedAt || Date.now(),
-              thinking: `${item.thinking || ""}${data.delta || ""}`,
-              thinkingFinished: false
-            } : item));
+            enqueueStreamPatch(localAssistantMessage.id, { thinkingDelta: data.delta || "" });
           }
           if (eventName === "thinking-done") {
-            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? {
-              ...item,
-              thinkingEndedAt: Date.now(),
-              thinkingDurationMs: Math.max(0, Number(data.elapsedMs ?? 0)),
-              thinkingFinished: true
-            } : item));
+            enqueueStreamPatch(localAssistantMessage.id, {
+              thinkingDone: true,
+              elapsedMs: Math.max(0, Number(data.elapsedMs ?? 0))
+            });
           }
           if (eventName === "delta") {
-            setMessages((items) => items.map((item) => {
-              if (item.id !== localAssistantMessage.id) return item;
-              const nowMs = Date.now();
-              const nextContent = `${item.content || ""}${data.delta || ""}`;
-              const hasInlineThinking = /<think\b/i.test(nextContent);
-              const inlineThinkingFinished = hasInlineThinking && /<\/think>/i.test(nextContent);
-              const shouldFinishThinking = (Boolean(item.thinking) || inlineThinkingFinished) && !item.thinkingFinished;
-              return {
-                ...item,
-                content: nextContent,
-                thinkingStartedAt: hasInlineThinking ? (item.thinkingStartedAt || nowMs) : item.thinkingStartedAt,
-                thinkingEndedAt: shouldFinishThinking ? nowMs : item.thinkingEndedAt,
-                thinkingDurationMs: shouldFinishThinking ? Math.max(0, nowMs - (item.thinkingStartedAt || nowMs)) : item.thinkingDurationMs,
-                thinkingFinished: shouldFinishThinking ? true : item.thinkingFinished
-              };
-            }));
+            enqueueStreamPatch(localAssistantMessage.id, { contentDelta: data.delta || "" });
           }
           if (eventName === "error") {
+            clearStreamFrame();
             setNotice(data.message);
             setMessages((items) => items.filter((item) => item.id !== localAssistantMessage.id));
           }
           if (eventName === "done") {
-            setMessages((items) => items.map((item) => {
-              if (item.id !== localAssistantMessage.id) return item;
-              const thinking = data.message?.thinking || item.thinking || "";
-              const fallbackDuration = thinking ? Math.max(0, (item.thinkingEndedAt || Date.now()) - (item.thinkingStartedAt || Date.now())) : null;
-              return {
-                ...data.message,
-                thinking,
-                thinkingDurationMs: data.message?.thinkingDurationMs ?? item.thinkingDurationMs ?? fallbackDuration,
-                thinkingFinished: Boolean(thinking),
-                loading: false
-              };
-            }));
+            enqueueStreamPatch(localAssistantMessage.id, { finalMessage: data.message });
+            flushStreamPatch(localAssistantMessage.id);
             setUser((current) => current ? { ...current, balance: data.balance } : current);
           }
         }
       }
     } catch (error) {
+      clearStreamFrame();
       setNotice(error.message);
       setMessages((items) => items.filter((item) => item.id !== localAssistantMessage.id));
     } finally {

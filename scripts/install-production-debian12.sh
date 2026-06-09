@@ -264,6 +264,7 @@ ${SSL_CONFIG}
         add_header Cache-Control "no-store" always;
         proxy_pass http://127.0.0.1:${BACKEND_PORT}/api/;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -283,6 +284,11 @@ ${SSL_CONFIG}
         try_files \$uri \$uri/ /admin/index.html;
     }
 
+    location = /admin/index.html {
+        add_header Cache-Control "no-store" always;
+        alias ${WEB_DIR}/admin/index.html;
+    }
+
     location /admin/assets/ {
         add_header Cache-Control "public, max-age=31536000, immutable" always;
         alias ${WEB_DIR}/admin/assets/;
@@ -297,6 +303,11 @@ ${SSL_CONFIG}
     location / {
         add_header Cache-Control "no-store" always;
         try_files \$uri \$uri/ /index.html;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+        try_files /index.html =404;
     }
 }
 EOF

@@ -8,6 +8,13 @@
 
 ## 快速启动
 
+如果服务器或本机网络只允许 SSH 走 443 端口，可以这样克隆：
+
+```bash
+git clone ssh://git@ssh.github.com:443/aquasofts/ai-jiuguan.git
+cd ai-jiuguan
+```
+
 ### macOS
 
 安装 Node.js：
@@ -67,7 +74,7 @@ npm run start:debian12
 - 用户前端：`http://localhost:5173`
 - 管理员前端：`http://localhost:5174/admin/login`
 
-如果浏览器打开成 `5175`、`5176`，或者页面出现 `Failed to fetch`，说明旧服务占用了端口。请先在运行脚本的终端按 `Ctrl+C` 停止，再重新执行一键脚本。新版一键脚本会自动清理 `2255/5173/5174/5175/5176` 端口，并且 Vite 不会再自动换端口。
+一键部署脚本会写入本地端口和 CORS 配置；一键启动脚本会固定 `2255/5173/5174`，不会让 Vite 自动换端口。如果端口已被旧进程占用，脚本会先停止旧进程再启动。
 
 管理员账号：
 

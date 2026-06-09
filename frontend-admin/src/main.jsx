@@ -399,7 +399,7 @@ function HistoryModal({ request, user, onClose }) {
               <article key={session.id}>
                 <strong>{session.title}</strong>
                 <span>{new Date(session.updatedAt).toLocaleString()}</span>
-                <p>消息数量：{session.messages.length}</p>
+                <p>消息数量：{session.messageCount ?? 0}</p>
                 <button onClick={() => openDetail(session)}><History size={15} /> 查看完整记录</button>
               </article>
             ))}

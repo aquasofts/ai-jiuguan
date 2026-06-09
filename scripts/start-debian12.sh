@@ -4,6 +4,20 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+env_value() {
+  local key="$1"
+  local fallback="$2"
+  if [ -f backend/.env ]; then
+    local value
+    value="$(grep -E "^${key}=" backend/.env | tail -n 1 | cut -d= -f2- || true)"
+    if [ -n "$value" ]; then
+      echo "$value"
+      return
+    fi
+  fi
+  echo "$fallback"
+}
+
 need_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "缺少命令：$1"
@@ -46,28 +60,31 @@ if [ ! -f backend/.env ] || [ ! -d node_modules ]; then
   exit 1
 fi
 
-stop_port 2255
-stop_port 5173
-stop_port 5174
-stop_port 5175
-stop_port 5176
+BACKEND_PORT="${BACKEND_PORT:-$(env_value PORT 2255)}"
+USER_PORT="${USER_PORT:-5173}"
+ADMIN_PORT="${ADMIN_PORT:-5174}"
+API_BASE_URL="http://127.0.0.1:${BACKEND_PORT}"
+
+stop_port "$BACKEND_PORT"
+stop_port "$USER_PORT"
+stop_port "$ADMIN_PORT"
 
 npm run db:init
 
 echo
 echo "启动服务中..."
-echo "后端 API：     http://127.0.0.1:2255"
-echo "用户前端：     http://127.0.0.1:5173"
-echo "管理员前端：   http://127.0.0.1:5174/admin/login"
+echo "后端 API：     ${API_BASE_URL}"
+echo "用户前端：     http://127.0.0.1:${USER_PORT}"
+echo "管理员前端：   http://127.0.0.1:${ADMIN_PORT}/admin/login"
 echo
 echo "按 Ctrl+C 停止全部服务。"
 
 BACKEND_LOG="${TMPDIR:-/tmp}/ai-tavern-backend.log"
-npm run dev:backend >"$BACKEND_LOG" 2>&1 &
+(cd backend && PORT="$BACKEND_PORT" HOST=127.0.0.1 node src/server.js) >"$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
 for _ in $(seq 1 20); do
-  if curl -fsS http://127.0.0.1:2255/api/health >/dev/null 2>&1; then
+  if curl -fsS "${API_BASE_URL}/api/health" >/dev/null 2>&1; then
     break
   fi
 
@@ -80,15 +97,15 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 
-if ! curl -fsS http://127.0.0.1:2255/api/health >/dev/null 2>&1; then
+if ! curl -fsS "${API_BASE_URL}/api/health" >/dev/null 2>&1; then
   echo "后端健康检查超时，请查看日志：$BACKEND_LOG"
   exit 1
 fi
 
-npm run dev:user &
+VITE_API_BASE_URL="$API_BASE_URL" VITE_PORT="$USER_PORT" npm run dev -w frontend-user &
 USER_PID=$!
 
-npm run dev:admin &
+VITE_API_BASE_URL="$API_BASE_URL" VITE_PORT="$ADMIN_PORT" npm run dev -w frontend-admin &
 ADMIN_PID=$!
 
 wait

@@ -1,5 +1,5 @@
 import jwt from "jsonwebtoken";
-import { readDb, publicUser, publicAdmin } from "./db.js";
+import { getAdminById, getUserById, publicUser, publicAdmin } from "./db.js";
 
 const secret = () => process.env.JWT_SECRET || "dev-secret-change-me";
 
@@ -23,8 +23,7 @@ export function requireUser(req, res, next) {
     if (!token) return res.status(401).json({ message: "请先登录" });
     const payload = jwt.verify(token, secret());
     if (payload.type !== "user") return res.status(403).json({ message: "权限不足" });
-    const db = readDb();
-    const user = db.users.find((item) => item.id === payload.sub);
+    const user = getUserById(payload.sub);
     if (!user) return res.status(401).json({ message: "用户不存在" });
     if (user.status !== "active") return res.status(403).json({ message: "账号尚未通过审核" });
     req.user = publicUser(user);
@@ -40,8 +39,7 @@ export function requireAdmin(req, res, next) {
     if (!token) return res.status(401).json({ message: "请先登录管理员账号" });
     const payload = jwt.verify(token, secret());
     if (payload.type !== "admin") return res.status(403).json({ message: "权限不足" });
-    const db = readDb();
-    const admin = db.admins.find((item) => item.id === payload.sub);
+    const admin = getAdminById(payload.sub);
     if (!admin) return res.status(401).json({ message: "管理员不存在" });
     req.admin = publicAdmin(admin);
     next();

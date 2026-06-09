@@ -7,9 +7,9 @@
 从 Git 克隆或把压缩包上传到服务器后执行：
 
 ```bash
-git clone <repo-url> ai-tavern
-cd ai-tavern
-bash scripts/install-production-debian12.sh https://example.com --yes
+git clone ssh://git@ssh.github.com:443/aquasofts/ai-jiuguan.git
+cd ai-jiuguan
+sudo bash scripts/install-production-debian12.sh https://example.com --yes
 ```
 
 如果使用压缩包：
@@ -17,7 +17,7 @@ bash scripts/install-production-debian12.sh https://example.com --yes
 ```bash
 tar -xzf ai-tavern-deploy-20260609.tar.gz
 cd ai-tavern-deploy-20260609
-bash scripts/install-production-debian12.sh
+sudo bash scripts/install-production-debian12.sh
 ```
 
 脚本运行后会提示填写公网访问地址。可以填：
@@ -26,7 +26,7 @@ bash scripts/install-production-debian12.sh
 - `example.com`
 - `https://example.com`
 
-脚本会安装 Node.js 22、Nginx、依赖，缺少前端构建产物时自动构建，创建 systemd 服务，并把前端静态文件放到 Nginx 下。
+脚本会安装 Node.js 22、Nginx、依赖，缺少前端构建产物时自动构建，创建 systemd 服务，并把前端静态文件放到 Nginx 下。重复执行会更新代码和静态文件，并保留已有 `.env` 和 SQLite 数据库。
 
 ## 访问地址
 

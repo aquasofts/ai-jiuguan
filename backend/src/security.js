@@ -2,6 +2,7 @@ const windows = new Map();
 const activeChats = new Set();
 const aiResponseWaiters = [];
 let activeAiResponses = 0;
+let lastRateLimitCleanup = 0;
 
 export function envBool(name, fallback = false) {
   const value = process.env[name];
@@ -26,13 +27,23 @@ export function securityHeaders(req, res, next) {
 
 export function makeRateLimiter({ windowMs, max, key = (req) => req.ip, message = "请求过于频繁，请稍后再试" }) {
   return (req, res, next) => {
-    const now = Date.now();
-    const bucketKey = key(req);
-    const hits = (windows.get(bucketKey) || []).filter((time) => now - time < windowMs);
-    hits.push(now);
-    windows.set(bucketKey, hits);
+    const currentTime = Date.now();
+    if (currentTime - lastRateLimitCleanup > 60_000) {
+      lastRateLimitCleanup = currentTime;
+      for (const [bucketKey, bucket] of windows) {
+        if (currentTime - bucket.startedAt >= bucket.windowMs) windows.delete(bucketKey);
+      }
+    }
 
-    if (hits.length > max) {
+    const bucketKey = key(req);
+    let bucket = windows.get(bucketKey);
+    if (!bucket || currentTime - bucket.startedAt >= windowMs) {
+      bucket = { startedAt: currentTime, count: 0, windowMs };
+      windows.set(bucketKey, bucket);
+    }
+    bucket.count += 1;
+
+    if (bucket.count > max) {
       return res.status(429).json({ message });
     }
 

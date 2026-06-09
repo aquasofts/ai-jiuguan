@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+BACKEND_PORT="${BACKEND_PORT:-2255}"
+USER_PORT="${USER_PORT:-5173}"
+ADMIN_PORT="${ADMIN_PORT:-5174}"
+
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "macOS 请先安装 Node.js："
   echo "  brew install node"
@@ -33,6 +37,30 @@ needs_security_reset() {
   return 1
 }
 
+set_env() {
+  local key="$1"
+  local value="$2"
+  local file="backend/.env"
+  local tmp
+  tmp="$(mktemp)"
+  if grep -q "^${key}=" "$file"; then
+    awk -v key="$key" -v value="$value" 'BEGIN { prefix = key "=" } index($0, prefix) == 1 { $0 = prefix value } { print }' "$file" > "$tmp"
+    cat "$tmp" > "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+  rm -f "$tmp"
+}
+
+configure_local_env() {
+  set_env PORT "$BACKEND_PORT"
+  set_env HOST "127.0.0.1"
+  set_env USER_FRONTEND_ORIGIN "http://localhost:${USER_PORT}"
+  set_env ADMIN_FRONTEND_ORIGIN "http://localhost:${ADMIN_PORT}"
+  set_env CORS_ORIGINS "http://localhost:${USER_PORT},http://127.0.0.1:${USER_PORT},http://localhost:${ADMIN_PORT},http://127.0.0.1:${ADMIN_PORT}"
+  chmod 600 backend/.env 2>/dev/null || true
+}
+
 if ! install_dependencies; then
   echo
   echo "依赖安装失败。可清理依赖目录后重试："
@@ -45,8 +73,11 @@ if [ ! -f backend/.env ]; then
   cp backend/.env.example backend/.env
 fi
 
+configure_local_env
+
 if needs_security_reset; then
   npm run security:reset
+  configure_local_env
 fi
 
 npm run db:init
@@ -55,3 +86,8 @@ npm run build
 echo
 echo "部署完成。启动项目："
 echo "  bash scripts/start-mac.sh"
+echo
+echo "默认访问地址："
+echo "  后端 API：   http://127.0.0.1:${BACKEND_PORT}"
+echo "  用户前端：   http://127.0.0.1:${USER_PORT}"
+echo "  管理后台：   http://127.0.0.1:${ADMIN_PORT}/admin/login"
