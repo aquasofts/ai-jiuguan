@@ -69,18 +69,44 @@ export function normalizeClientContext(raw = {}, fallbackUserAgent = "") {
   };
 }
 
-export function normalizeAttachments(rawAttachments = [], { maxFiles = 5, maxTextChars = 60000 } = {}) {
+function isSupportedImageDataUrl(value) {
+  return /^data:image\/(?:png|jpe?g|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(String(value || ""));
+}
+
+export function normalizeAttachments(rawAttachments = [], { maxFiles = 5, maxTextChars = 60000, maxImageDataUrlChars = 1600000 } = {}) {
   if (!Array.isArray(rawAttachments)) return [];
   return rawAttachments.slice(0, maxFiles).map((file) => {
     const text = String(file?.text || "").slice(0, maxTextChars);
+    const imageDataUrl = isSupportedImageDataUrl(file?.imageDataUrl) && String(file.imageDataUrl).length <= maxImageDataUrlChars
+      ? String(file.imageDataUrl)
+      : "";
+    const hasImage = imageDataUrl || Boolean(file?.hasImage);
     return {
       name: String(file?.name || "未命名文件").slice(0, 180),
       type: String(file?.type || "application/octet-stream").slice(0, 120),
       size: Math.max(0, Number(file?.size || 0)),
+      kind: ["image", "text", "document", "spreadsheet"].includes(file?.kind) ? file.kind : (hasImage ? "image" : "document"),
       text,
+      imageDataUrl,
+      hasText: Boolean(text) || Boolean(file?.hasText),
+      hasImage,
+      source: ["client", "server"].includes(file?.source) ? file.source : "client",
       truncated: Boolean(file?.truncated) || String(file?.text || "").length > maxTextChars
     };
   });
+}
+
+export function summarizeAttachments(attachments = []) {
+  return attachments.map((file) => ({
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    kind: file.kind,
+    hasText: Boolean(file.text || file.hasText),
+    hasImage: Boolean(file.imageDataUrl || file.hasImage),
+    source: file.source,
+    truncated: Boolean(file.truncated)
+  }));
 }
 
 export function buildInstructions({ character, user, context, promptSettings }) {
@@ -110,9 +136,16 @@ export function buildInstructions({ character, user, context, promptSettings }) 
 function attachmentPromptText(attachments) {
   if (!attachments?.length) return "";
   return attachments.map((file, index) => {
-    const body = file.text
-      ? `内容${file.truncated ? "（已截断）" : ""}：\n${file.text}`
-      : "内容：浏览器无法读取该文件为文本，仅提供文件元数据。";
+    let body = "内容：未随历史记录保存，仅提供文件元数据。";
+    if (file.text) {
+      body = `内容${file.truncated ? "（已截断）" : ""}：\n${file.text}`;
+    } else if (file.imageDataUrl) {
+      body = "内容：图片已作为视觉输入发送给模型。";
+    } else if (file.hasImage) {
+      body = "内容：图片内容未保存在历史记录中。";
+    } else if (file.hasText) {
+      body = "内容：文件正文已在上传当次发送给模型，历史记录中不保存正文。";
+    }
     return `文件 ${index + 1}：${file.name}\n类型：${file.type}\n大小：${file.size} 字节\n${body}`;
   }).join("\n\n");
 }
@@ -120,7 +153,19 @@ function attachmentPromptText(attachments) {
 function formatMessageContentForModel(message, settings) {
   const content = String(message.content || "");
   if (!settings.includeAttachmentsInPrompt || message.role !== "user" || !message.attachments?.length) return content;
-  return `${content}\n\n[用户上传文件]\n${attachmentPromptText(message.attachments)}`.trim();
+  const text = `${content}\n\n[用户上传文件]\n${attachmentPromptText(message.attachments)}`.trim();
+  const imageInputs = message.attachments
+    .filter((file) => file.imageDataUrl)
+    .map((file) => ({
+      type: "input_image",
+      image_url: file.imageDataUrl,
+      detail: "auto"
+    }));
+  if (!imageInputs.length) return text;
+  return [
+    { type: "input_text", text },
+    ...imageInputs
+  ];
 }
 
 function summarizeOlderMessages(messages, settings) {
@@ -161,6 +206,40 @@ export function buildModelInput({ messages, promptSettings }) {
   ];
 }
 
+function summarizeSnapshotContent(content) {
+  if (typeof content === "string") {
+    const marker = "[用户上传文件]";
+    const markerIndex = content.indexOf(marker);
+    if (markerIndex === -1) return content;
+    return `${content.slice(0, markerIndex)}${marker}\n附件正文和图片数据未保存到请求快照。`;
+  }
+
+  if (!Array.isArray(content)) return content;
+  return content.map((part) => {
+    if (part?.type === "input_text") {
+      return {
+        ...part,
+        text: summarizeSnapshotContent(part.text)
+      };
+    }
+    if (part?.type === "input_image") {
+      return {
+        ...part,
+        image_url: part.image_url ? "[image data omitted]" : part.image_url
+      };
+    }
+    return part;
+  });
+}
+
+function summarizeInputForSnapshot(input) {
+  if (!Array.isArray(input)) return input;
+  return input.map((item) => ({
+    ...item,
+    content: summarizeSnapshotContent(item.content)
+  }));
+}
+
 export function buildRequestSnapshot({ instructions, input, context, attachments, promptSettings, api, character, user }) {
   return {
     createdAt: new Date().toISOString(),
@@ -185,7 +264,7 @@ export function buildRequestSnapshot({ instructions, input, context, attachments
     context,
     attachments,
     instructions,
-    input
+    input: summarizeInputForSnapshot(input)
   };
 }
 
@@ -193,7 +272,7 @@ export function normalizeBaseUrl(apiUrl) {
   return (apiUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
 }
 
-export async function streamOpenAIResponse({ apiKey, apiUrl, model, instructions, input, onDelta, maxOutputTokens, promptSettings }) {
+export async function streamOpenAIResponse({ apiKey, apiUrl, model, instructions, input, onDelta, maxOutputTokens, promptSettings, signal }) {
   const client = new OpenAI({
     apiKey,
     baseURL: normalizeBaseUrl(apiUrl)
@@ -214,12 +293,14 @@ export async function streamOpenAIResponse({ apiKey, apiUrl, model, instructions
 
   const stream = await client.responses.create({
     ...request
-  });
+  }, { signal });
 
   let text = "";
   let usage = null;
 
   for await (const event of stream) {
+    if (signal?.aborted) throw Object.assign(new Error("请求已取消"), { code: "REQUEST_ABORTED" });
+
     if (event.type === "response.output_text.delta" && event.delta) {
       text += event.delta;
       onDelta(event.delta);

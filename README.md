@@ -82,9 +82,15 @@ npm run start:debian12
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
+MAX_CONCURRENT_AI_RESPONSES=5
+CORS_ORIGINS=https://example.com
 ```
 
 也可以在管理员前端的 API 管理里新增或编辑 API 配置。未配置 API Key 时，后端会返回本地占位回复，方便先验证整套流程。
+
+`MAX_CONCURRENT_AI_RESPONSES` 控制全站同时生成 AI 回复的最大数量，默认 5。超过后新聊天请求会在服务端排队，用户前端仍保持“AI 正在回复...”状态，不显示排队提示。
+
+如果前端和后端不是同一个源，或临时使用了非默认端口，请把允许访问后端的前端地址写入 `CORS_ORIGINS`，多个地址用英文逗号分隔。
 
 系统提示词、角色卡拼接、历史记录压缩、附件内容是否发送给模型等行为，可以在管理员前端的“提示词配置”里调整。
 

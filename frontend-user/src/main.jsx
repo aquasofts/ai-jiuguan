@@ -2,13 +2,19 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import readExcelFile from "read-excel-file/browser";
 import { Bot, ChevronDown, FileText, LogIn, LogOut, Menu, MessageSquarePlus, Paperclip, Send, Sparkles, UserRound, WalletCards, X } from "lucide-react";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:2255" : "");
 const MAX_ATTACHMENTS = 5;
-const MAX_ATTACHMENT_BYTES = 750 * 1024;
+const MAX_CLIENT_TEXT_BYTES = 750 * 1024;
 const MAX_ATTACHMENT_TEXT_CHARS = 60000;
+const MAX_SERVER_PARSE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_DATA_URL_CHARS = 1500000;
+const MAX_IMAGE_EDGE = 1600;
+const IMAGE_QUALITY = 0.82;
 
 function App() {
   const [token, setToken] = React.useState(localStorage.getItem("user_token") || "");
@@ -28,6 +34,7 @@ function App() {
   const [authMode, setAuthMode] = React.useState("login");
   const [authNotice, setAuthNotice] = React.useState("");
   const [streaming, setStreaming] = React.useState(false);
+  const [processingFiles, setProcessingFiles] = React.useState(false);
   const [notice, setNotice] = React.useState("");
   const [dragActive, setDragActive] = React.useState(false);
   const messagesEndRef = React.useRef(null);
@@ -248,42 +255,234 @@ function App() {
       || /\.(txt|md|csv|json|xml|html|css|js|jsx|ts|tsx|py|java|go|rs|sql|yml|yaml|log)$/i.test(file.name);
   }
 
-  function readAttachment(file) {
+  function needsServerParse(file) {
+    return /\.(pdf|docx)$/i.test(file.name)
+      || [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ].includes(file.type);
+  }
+
+  function isSupportedRasterImage(file) {
+    return /^image\/(png|jpe?g|webp|gif)$/i.test(file.type || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+  }
+
+  function attachmentBase(file, extra = {}) {
+    return {
+      id: `file_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      name: file.name,
+      type: file.type || "application/octet-stream",
+      size: file.size,
+      kind: "document",
+      text: "",
+      imageDataUrl: "",
+      hasText: false,
+      hasImage: false,
+      source: "client",
+      truncated: false,
+      ...extra
+    };
+  }
+
+  function summarizeAttachment(file) {
+    const { text, imageDataUrl, ...summary } = file;
+    return {
+      ...summary,
+      hasText: Boolean(text || file.hasText),
+      hasImage: Boolean(imageDataUrl || file.hasImage)
+    };
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("图片读取失败"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("图片解码失败"));
+      image.src = dataUrl;
+    });
+  }
+
+  async function readImageAttachment(file) {
+    if (!isSupportedRasterImage(file)) {
+      throw new Error(`${file.name} 不是支持的图片格式`);
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      throw new Error(`${file.name} 超过 5MB，请压缩后再上传`);
+    }
+
+    const originalDataUrl = await readFileAsDataUrl(file);
+    if (file.type === "image/gif") {
+      if (originalDataUrl.length > MAX_IMAGE_DATA_URL_CHARS) {
+        throw new Error(`${file.name} 图片编码后过大，请转换为 JPG/PNG 或压缩后再上传`);
+      }
+      return attachmentBase(file, {
+        kind: "image",
+        imageDataUrl: originalDataUrl,
+        hasImage: true
+      });
+    }
+
+    const image = await loadImage(originalDataUrl);
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    let scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(sourceWidth, sourceHeight));
+    if (scale >= 1 && originalDataUrl.length <= MAX_IMAGE_DATA_URL_CHARS) {
+      return attachmentBase(file, {
+        kind: "image",
+        imageDataUrl: originalDataUrl,
+        hasImage: true
+      });
+    }
+
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    let imageDataUrl = "";
+    let quality = IMAGE_QUALITY;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      imageDataUrl = canvas.toDataURL("image/jpeg", quality);
+      if (imageDataUrl.length <= MAX_IMAGE_DATA_URL_CHARS) break;
+      scale *= 0.78;
+      quality = Math.max(0.62, quality - 0.08);
+    }
+    if (imageDataUrl.length > MAX_IMAGE_DATA_URL_CHARS) {
+      throw new Error(`${file.name} 压缩后仍过大，请裁剪或压缩后再上传`);
+    }
+    return attachmentBase(file, {
+      kind: "image",
+      type: "image/jpeg",
+      imageDataUrl,
+      hasImage: true,
+      truncated: scale < 1 || imageDataUrl.length < originalDataUrl.length
+    });
+  }
+
+  function readTextAttachment(file) {
     return new Promise((resolve) => {
-      const base = {
-        id: `file_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-        name: file.name,
-        type: file.type || "application/octet-stream",
-        size: file.size,
-        text: "",
-        truncated: file.size > MAX_ATTACHMENT_BYTES
-      };
-      if (!canReadAsText(file)) return resolve(base);
+      const base = attachmentBase(file, {
+        kind: "text",
+        truncated: file.size > MAX_CLIENT_TEXT_BYTES
+      });
       const reader = new FileReader();
       reader.onload = () => {
         const text = String(reader.result || "");
         resolve({
           ...base,
           text: text.slice(0, MAX_ATTACHMENT_TEXT_CHARS),
+          hasText: Boolean(text),
           truncated: base.truncated || text.length > MAX_ATTACHMENT_TEXT_CHARS
         });
       };
       reader.onerror = () => resolve(base);
-      reader.readAsText(file.slice(0, MAX_ATTACHMENT_BYTES));
+      reader.readAsText(file.slice(0, MAX_CLIENT_TEXT_BYTES));
     });
+  }
+
+  function cellToText(value) {
+    if (value === null || value === undefined) return "";
+    if (value instanceof Date) return value.toISOString();
+    return String(value);
+  }
+
+  function sheetToAttachmentText(sheet) {
+    const rows = Array.isArray(sheet?.data) ? sheet.data : [];
+    const body = rows
+      .map((row) => (Array.isArray(row) ? row.map(cellToText).join("\t") : cellToText(row)))
+      .filter((line) => line.trim())
+      .join("\n");
+    return `工作表：${sheet?.sheet || "Sheet"}\n${body}`.trim();
+  }
+
+  async function readSpreadsheetAttachment(file) {
+    if (file.size > MAX_SERVER_PARSE_BYTES) {
+      throw new Error(`${file.name} 超过 5MB，请另存为 CSV 或压缩内容后再上传`);
+    }
+    const sheets = await readExcelFile(file);
+    const text = sheets.map(sheetToAttachmentText).join("\n\n");
+    return attachmentBase(file, {
+      kind: "spreadsheet",
+      text: text.slice(0, MAX_ATTACHMENT_TEXT_CHARS),
+      hasText: Boolean(text),
+      source: "client",
+      truncated: text.length > MAX_ATTACHMENT_TEXT_CHARS
+    });
+  }
+
+  async function parseAttachmentOnServer(file) {
+    if (file.size > MAX_SERVER_PARSE_BYTES) {
+      throw new Error(`${file.name} 超过 5MB，无法上传服务器解析`);
+    }
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`${API_BASE}/api/attachments/parse`, {
+      method: "POST",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: formData
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `${file.name} 解析失败`);
+    return {
+      ...attachmentBase(file),
+      ...data.attachment,
+      id: `file_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      hasText: Boolean(data.attachment?.text),
+      source: "server"
+    };
+  }
+
+  async function readAttachment(file) {
+    if (isSupportedRasterImage(file)) return readImageAttachment(file);
+    if (canReadAsText(file)) return readTextAttachment(file);
+    if (/\.xlsx$/i.test(file.name) || file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+      return readSpreadsheetAttachment(file);
+    }
+    if (/\.xls$/i.test(file.name)) {
+      throw new Error(`${file.name} 是旧版 Excel 格式，请另存为 .xlsx 或 CSV`);
+    }
+    if (needsServerParse(file)) return parseAttachmentOnServer(file);
+    throw new Error(`${file.name} 暂不支持解析，请转换为图片、PDF、DOCX、XLSX、CSV 或文本`);
   }
 
   async function queueFiles(files) {
     const selected = Array.from(files || []).filter(Boolean);
     if (!selected.length) return false;
+    if (!token) {
+      openAuthModal("login");
+      return true;
+    }
     const slots = Math.max(0, MAX_ATTACHMENTS - attachments.length);
     if (!slots) {
       setNotice(`最多支持 ${MAX_ATTACHMENTS} 个附件`);
       return true;
     }
-    const next = await Promise.all(selected.slice(0, slots).map(readAttachment));
-    setAttachments((items) => [...items, ...next].slice(0, MAX_ATTACHMENTS));
-    setNotice(selected.length > slots ? `已添加前 ${slots} 个附件` : "");
+    setProcessingFiles(true);
+    try {
+      const results = await Promise.allSettled(selected.slice(0, slots).map(readAttachment));
+      const next = results.filter((result) => result.status === "fulfilled").map((result) => result.value);
+      if (next.length) setAttachments((items) => [...items, ...next].slice(0, MAX_ATTACHMENTS));
+      const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason?.message || "文件处理失败");
+      const notices = [
+        selected.length > slots ? `已添加前 ${slots} 个附件` : "",
+        ...failures
+      ].filter(Boolean);
+      setNotice(notices.join("；"));
+    } finally {
+      setProcessingFiles(false);
+    }
     return true;
   }
 
@@ -346,7 +545,7 @@ function App() {
   async function sendMessage(event) {
     event.preventDefault();
     const content = draft.trim();
-    if ((!content && !attachments.length) || streaming) return;
+    if ((!content && !attachments.length) || streaming || processingFiles) return;
     if (!token) {
       openAuthModal("login");
       return;
@@ -368,7 +567,7 @@ function App() {
       id: `local_${Date.now()}`,
       role: "user",
       content,
-      attachments,
+      attachments: attachments.map(summarizeAttachment),
       createdAt: new Date().toISOString()
     };
     const localAssistantMessage = {
@@ -619,10 +818,10 @@ function App() {
             />
           </div>
           <input ref={fileInputRef} className="file-input" type="file" multiple onChange={handleFiles} />
-          <button type="button" className="attach" disabled={streaming || attachments.length >= MAX_ATTACHMENTS} onClick={() => fileInputRef.current?.click()}>
+          <button type="button" className="attach" disabled={streaming || processingFiles || attachments.length >= MAX_ATTACHMENTS} onClick={() => fileInputRef.current?.click()}>
             <Paperclip size={18} />
           </button>
-          <button className="send" disabled={streaming || (!draft.trim() && !attachments.length)}>
+          <button className="send" disabled={streaming || processingFiles || (!draft.trim() && !attachments.length)}>
             <Send size={18} />
           </button>
         </form>
@@ -631,7 +830,7 @@ function App() {
           <div className="drop-overlay" aria-live="polite">
             <div className="drop-target">
               <FileText size={26} />
-              <strong>松手添加文件</strong>
+              <strong>{processingFiles ? "正在处理文件" : "松手添加文件"}</strong>
               <span>最多 {MAX_ATTACHMENTS} 个附件</span>
             </div>
           </div>

@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import bcrypt from "bcryptjs";
+import multer from "multer";
+import { parseAttachmentBuffer } from "./attachment-parser.js";
 import { readDb, writeDb, seedDb, uid, now, publicUser, publicApiKey } from "./db.js";
 import { requireUser, requireAdmin, signUser, signAdmin } from "./auth.js";
 import {
@@ -12,6 +14,7 @@ import {
   mergePromptSettings,
   normalizeAttachments,
   normalizeClientContext,
+  summarizeAttachments,
   streamOpenAIResponse
 } from "./openai-response.js";
 import {
@@ -24,6 +27,7 @@ import {
   sanitizeString,
   securityHeaders,
   validatePublicBaseUrl,
+  withAiResponseSlot,
   withUserChatLock
 } from "./security.js";
 
@@ -35,27 +39,48 @@ const maxHistoryMessages = envNumber("MAX_HISTORY_MESSAGES", 40, { min: 1, max: 
 const maxOutputTokens = envNumber("MAX_OUTPUT_TOKENS", 2048, { min: 64, max: 16000 });
 const maxAttachmentFiles = envNumber("MAX_ATTACHMENT_FILES", 5, { min: 0, max: 10 });
 const maxAttachmentTextChars = envNumber("MAX_ATTACHMENT_TEXT_CHARS", 60000, { min: 1000, max: 200000 });
+const maxServerParseFileBytes = envNumber("MAX_SERVER_PARSE_FILE_BYTES", 5 * 1024 * 1024, { min: 1024, max: 5 * 1024 * 1024 });
+const maxAttachmentImageDataUrlChars = envNumber("MAX_ATTACHMENT_IMAGE_DATA_URL_CHARS", 1600000, { min: 10000, max: 2500000 });
+const maxConcurrentAiResponses = envNumber("MAX_CONCURRENT_AI_RESPONSES", 5, { min: 1, max: 100 });
 const userInitialBalance = envNumber("USER_INITIAL_BALANCE", 0, { min: 0, max: 1000000 });
 const allowFreeAiCalls = envBool("ALLOW_FREE_AI_CALLS", false);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: maxServerParseFileBytes,
+    files: 1
+  }
+});
 
 assertSafeStartup();
 app.disable("x-powered-by");
 
+function splitOrigins(value = "") {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+}
+
+const allowedCorsOrigins = new Set([
+  process.env.USER_FRONTEND_ORIGIN || "http://localhost:5173",
+  process.env.ADMIN_FRONTEND_ORIGIN || "http://localhost:5174",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
+  ...splitOrigins(process.env.CORS_ORIGINS)
+]);
+
 app.use(cors({
   origin: (origin, callback) => {
-    const allowed = [
-    process.env.USER_FRONTEND_ORIGIN || "http://localhost:5173",
-    process.env.ADMIN_FRONTEND_ORIGIN || "http://localhost:5174",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:5174"
-    ];
-    if (!origin || allowed.includes(origin)) return callback(null, true);
+    if (!origin || allowedCorsOrigins.has(origin.replace(/\/+$/, ""))) return callback(null, true);
     return callback(new Error("CORS origin not allowed"));
   },
   credentials: true
 }));
 app.use(securityHeaders);
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({ limit: "12mb" }));
 app.use("/api", makeRateLimiter({ windowMs: 60_000, max: 240 }));
 
 const authLimiter = makeRateLimiter({
@@ -73,8 +98,18 @@ const chatLimiter = makeRateLimiter({
 });
 
 function sendSse(res, event, payload) {
+  if (res.writableEnded || res.destroyed) return;
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function sendSseComment(res) {
+  if (res.writableEnded || res.destroyed) return;
+  res.write(":\n\n");
+}
+
+function endSse(res) {
+  if (!res.writableEnded && !res.destroyed) res.end();
 }
 
 function userSessions(db, userId, characterId) {
@@ -222,6 +257,39 @@ app.get("/api/sessions/:id/messages", requireUser, (req, res) => {
   res.json({ session, messages: messagesForSession(db, session.id) });
 });
 
+app.post("/api/attachments/parse", requireUser, (req, res) => {
+  upload.single("file")(req, res, async (error) => {
+    if (error) {
+      const tooLarge = error.code === "LIMIT_FILE_SIZE";
+      return res.status(tooLarge ? 413 : 400).json({
+        message: tooLarge ? "需要服务器解析的文件必须小于 5MB" : "文件上传失败"
+      });
+    }
+
+    if (!req.file) return res.status(400).json({ message: "缺少文件" });
+
+    try {
+      const parsed = await parseAttachmentBuffer(req.file, { maxTextChars: maxAttachmentTextChars });
+      return res.json({
+        attachment: {
+          name: String(req.file.originalname || "未命名文件").slice(0, 180),
+          type: String(req.file.mimetype || parsed.type || "application/octet-stream").slice(0, 120),
+          size: req.file.size,
+          kind: parsed.kind,
+          text: parsed.text,
+          hasText: Boolean(parsed.text),
+          source: "server",
+          truncated: parsed.truncated
+        }
+      });
+    } catch (parseError) {
+      return res.status(parseError.statusCode || 422).json({
+        message: parseError.statusCode === 415 ? parseError.message : "文件解析失败，请转换为 PDF、DOCX、XLSX、CSV 或文本后重试"
+      });
+    }
+  });
+});
+
 app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -230,13 +298,21 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
     "X-Accel-Buffering": "no"
   });
 
+  const abortController = new AbortController();
+  res.on("close", () => abortController.abort());
+
   return withUserChatLock(req.user.id, async () => {
   const { sessionId } = req.body;
   const message = sanitizeString(req.body.message, maxMessageChars);
-  const attachments = normalizeAttachments(req.body.attachments, { maxFiles: maxAttachmentFiles, maxTextChars: maxAttachmentTextChars });
+  const attachmentsForModel = normalizeAttachments(req.body.attachments, {
+    maxFiles: maxAttachmentFiles,
+    maxTextChars: maxAttachmentTextChars,
+    maxImageDataUrlChars: maxAttachmentImageDataUrlChars
+  });
+  const attachments = summarizeAttachments(attachmentsForModel);
   if (!sessionId || (!message && !attachments.length)) {
     sendSse(res, "error", { message: "缺少会话或消息内容" });
-    return res.end();
+    return endSse(res);
   }
 
   let db = readDb();
@@ -244,19 +320,19 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
   const session = db.sessions.find((item) => item.id === sessionId && item.userId === req.user.id);
   if (!session) {
     sendSse(res, "error", { message: "会话不存在" });
-    return res.end();
+    return endSse(res);
   }
 
   const character = db.characters.find((item) => item.id === session.characterId && item.enabled);
   if (!character) {
     sendSse(res, "error", { message: "角色卡不存在或已停用" });
-    return res.end();
+    return endSse(res);
   }
 
   const price = character.usePrice ? Math.max(0, Number(character.price || 0)) : 0;
   if (Number(user.balance || 0) < price) {
     sendSse(res, "error", { message: "余额不足，请充值后继续对话" });
-    return res.end();
+    return endSse(res);
   }
 
   const createdAt = now();
@@ -292,7 +368,10 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
     promptSettings
   });
   const input = buildModelInput({
-    messages: messagesForSession(db, session.id),
+    messages: [
+      ...messagesForSession(db, session.id).filter((item) => item.id !== userMessage.id),
+      { ...userMessage, attachments: attachmentsForModel }
+    ],
     promptSettings
   });
   const requestSnapshot = buildRequestSnapshot({
@@ -308,39 +387,58 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
 
   let assistantText = "";
   let usage = null;
+  let queueHeartbeat = null;
+  const stopQueueHeartbeat = () => {
+    if (queueHeartbeat) {
+      clearInterval(queueHeartbeat);
+      queueHeartbeat = null;
+    }
+  };
 
   try {
     const apiKey = api?.apiKeySecret || process.env.OPENAI_API_KEY;
     if (apiKey && price <= 0 && !allowFreeAiCalls) {
       sendSse(res, "error", { message: "该角色卡尚未设置单次对话价格，已阻止真实模型调用以保护 API Key" });
-      return res.end();
+      return endSse(res);
     }
 
     if (apiKey) await assertAdminCredentialSafety(db);
 
-    if (!apiKey) {
-      const demo = "当前后端还没有配置 OpenAI API Key。这条回复用于验证 SSE 流式输出、Markdown 渲染、历史记录保存和余额检测流程。\n\n```js\nconsole.log('ai-tavern 已连接');\n```";
-      for (const chunk of demo.match(/.{1,12}/gs) || []) {
-        assistantText += chunk;
-        sendSse(res, "delta", { delta: chunk });
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-    } else {
-      const result = await streamOpenAIResponse({
-        apiKey,
-        apiUrl: validatePublicBaseUrl(api?.apiUrl || process.env.OPENAI_BASE_URL),
-        model: api?.model || process.env.OPENAI_MODEL || "gpt-5-mini",
-        instructions,
-        input,
-        maxOutputTokens,
-        promptSettings,
-        onDelta: (delta) => {
-          assistantText += delta;
-          sendSse(res, "delta", { delta });
+    await withAiResponseSlot({
+      limit: maxConcurrentAiResponses,
+      signal: abortController.signal,
+      onQueued: () => {
+        sendSseComment(res);
+        queueHeartbeat = setInterval(() => sendSseComment(res), 15_000);
+      },
+      onDequeued: stopQueueHeartbeat
+    }, async () => {
+      if (!apiKey) {
+        const demo = "当前后端还没有配置 OpenAI API Key。这条回复用于验证 SSE 流式输出、Markdown 渲染、历史记录保存和余额检测流程。\n\n```js\nconsole.log('ai-tavern 已连接');\n```";
+        for (const chunk of demo.match(/.{1,12}/gs) || []) {
+          if (abortController.signal.aborted) throw Object.assign(new Error("请求已取消"), { code: "REQUEST_ABORTED" });
+          assistantText += chunk;
+          sendSse(res, "delta", { delta: chunk });
+          await new Promise((resolve) => setTimeout(resolve, 20));
         }
-      });
-      usage = result.usage;
-    }
+      } else {
+        const result = await streamOpenAIResponse({
+          apiKey,
+          apiUrl: validatePublicBaseUrl(api?.apiUrl || process.env.OPENAI_BASE_URL),
+          model: api?.model || process.env.OPENAI_MODEL || "gpt-5-mini",
+          instructions,
+          input,
+          maxOutputTokens,
+          promptSettings,
+          signal: abortController.signal,
+          onDelta: (delta) => {
+            assistantText += delta;
+            sendSse(res, "delta", { delta });
+          }
+        });
+        usage = result.usage;
+      }
+    });
 
     db = readDb();
     const freshUser = db.users.find((item) => item.id === user.id);
@@ -372,15 +470,17 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
     if (freshSession) freshSession.updatedAt = now();
     writeDb(db);
     sendSse(res, "done", { message: assistantMessage, balance: freshUser.balance });
-    res.end();
+    endSse(res);
   } catch (error) {
+    stopQueueHeartbeat();
+    if (error.code === "REQUEST_ABORTED") return endSse(res);
     console.error("AI response failed:", error);
     sendSse(res, "error", { message: error.code === "CHAT_IN_PROGRESS" ? error.message : "AI 回复失败，请稍后再试" });
-    res.end();
+    endSse(res);
   }
   }).catch((error) => {
     sendSse(res, "error", { message: error.message || "聊天请求失败" });
-    res.end();
+    endSse(res);
   });
 });
 

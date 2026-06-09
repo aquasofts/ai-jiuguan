@@ -70,6 +70,14 @@ case "$PUBLIC_ORIGIN" in
     ;;
 esac
 
+PUBLIC_SCHEME="${PUBLIC_ORIGIN%%://*}"
+PUBLIC_HOSTPORT="${PUBLIC_ORIGIN#*://}"
+PUBLIC_HOSTPORT="${PUBLIC_HOSTPORT%%/*}"
+PUBLIC_HOST="${PUBLIC_HOSTPORT%%:*}"
+if [ -z "$PUBLIC_HOST" ]; then
+  PUBLIC_HOST="_"
+fi
+
 echo "将使用公网访问地址：$PUBLIC_ORIGIN"
 if [ "$ASSUME_YES" != "true" ]; then
   read -r -p "确认继续部署？[Y/n]: " confirm_deploy
@@ -102,7 +110,7 @@ need_file scripts/security-reset.mjs
 
 echo "安装系统依赖..."
 apt-get update
-apt-get install -y ca-certificates curl nginx
+apt-get install -y ca-certificates curl nginx openssl
 
 node_major="0"
 if command -v node >/dev/null 2>&1; then
@@ -159,6 +167,7 @@ set_env PORT "$BACKEND_PORT"
 set_env HOST "127.0.0.1"
 set_env USER_FRONTEND_ORIGIN "$PUBLIC_ORIGIN"
 set_env ADMIN_FRONTEND_ORIGIN "$PUBLIC_ORIGIN"
+set_env CORS_ORIGINS "$PUBLIC_ORIGIN"
 set_env ALLOW_INSECURE_DEFAULTS "false"
 
 echo "安装后端生产依赖..."
@@ -216,15 +225,43 @@ WantedBy=multi-user.target
 EOF
 
 echo "写入 Nginx 配置..."
+SSL_LISTEN=""
+SSL_CONFIG=""
+if [ "$PUBLIC_SCHEME" = "https" ]; then
+  SSL_DIR="/etc/ssl/${NGINX_SITE_NAME}"
+  SSL_CERT="${SSL_DIR}/origin.crt"
+  SSL_KEY="${SSL_DIR}/origin.key"
+  install -d -m 755 "$SSL_DIR"
+  if [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ]; then
+    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+      -keyout "$SSL_KEY" \
+      -out "$SSL_CERT" \
+      -subj "/CN=${PUBLIC_HOST}" \
+      -addext "subjectAltName=DNS:${PUBLIC_HOST}"
+  fi
+  chmod 600 "$SSL_KEY"
+  SSL_LISTEN="    listen 443 ssl;"
+  SSL_CONFIG="
+    ssl_certificate ${SSL_CERT};
+    ssl_certificate_key ${SSL_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+"
+fi
+
 cat > "/etc/nginx/sites-available/${NGINX_SITE_NAME}" <<EOF
 server {
     listen 80;
-    server_name _;
+${SSL_LISTEN}
+    server_name ${PUBLIC_HOST};
+${SSL_CONFIG}
 
     client_max_body_size 8m;
     root ${WEB_DIR}/user;
 
     location /api/ {
+        add_header Cache-Control "no-store" always;
         proxy_pass http://127.0.0.1:${BACKEND_PORT}/api/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -241,15 +278,24 @@ server {
     }
 
     location /admin/ {
+        add_header Cache-Control "no-store" always;
         alias ${WEB_DIR}/admin/;
         try_files \$uri \$uri/ /admin/index.html;
     }
 
+    location /admin/assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        alias ${WEB_DIR}/admin/assets/;
+        try_files \$uri =404;
+    }
+
     location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
         try_files \$uri =404;
     }
 
     location / {
+        add_header Cache-Control "no-store" always;
         try_files \$uri \$uri/ /index.html;
     }
 }

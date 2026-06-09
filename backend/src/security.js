@@ -1,5 +1,7 @@
 const windows = new Map();
 const activeChats = new Set();
+const aiResponseWaiters = [];
+let activeAiResponses = 0;
 
 export function envBool(name, fallback = false) {
   const value = process.env[name];
@@ -77,6 +79,78 @@ export async function withUserChatLock(userId, action) {
     return await action();
   } finally {
     activeChats.delete(userId);
+  }
+}
+
+function requestAbortedError() {
+  return Object.assign(new Error("请求已取消"), { code: "REQUEST_ABORTED" });
+}
+
+function drainAiResponseQueue(limit) {
+  while (activeAiResponses < limit && aiResponseWaiters.length) {
+    const waiter = aiResponseWaiters.shift();
+    waiter.cleanup?.();
+
+    if (waiter.signal?.aborted) {
+      waiter.reject(requestAbortedError());
+      continue;
+    }
+
+    activeAiResponses += 1;
+    waiter.resolve();
+  }
+}
+
+export async function withAiResponseSlot({ limit, signal, onQueued, onDequeued } = {}, action) {
+  const maxConcurrent = Math.max(1, Math.floor(Number(limit) || 1));
+  if (signal?.aborted) throw requestAbortedError();
+
+  let acquired = false;
+  if (activeAiResponses < maxConcurrent) {
+    activeAiResponses += 1;
+    acquired = true;
+  } else {
+    await new Promise((resolve, reject) => {
+      const waiter = {
+        signal,
+        cleanup: null,
+        resolve: () => {
+          acquired = true;
+          onDequeued?.();
+          resolve();
+        },
+        reject: (error) => {
+          onDequeued?.();
+          reject(error);
+        }
+      };
+
+      const abort = () => {
+        const index = aiResponseWaiters.indexOf(waiter);
+        if (index !== -1) aiResponseWaiters.splice(index, 1);
+        waiter.cleanup?.();
+        waiter.reject(requestAbortedError());
+      };
+
+      if (signal) {
+        waiter.cleanup = () => signal.removeEventListener("abort", abort);
+        signal.addEventListener("abort", abort, { once: true });
+      }
+
+      aiResponseWaiters.push(waiter);
+      onQueued?.();
+      drainAiResponseQueue(maxConcurrent);
+    });
+  }
+
+  try {
+    if (signal?.aborted) throw requestAbortedError();
+    return await action();
+  } finally {
+    if (acquired) {
+      activeAiResponses = Math.max(0, activeAiResponses - 1);
+      drainAiResponseQueue(maxConcurrent);
+    }
   }
 }
 
