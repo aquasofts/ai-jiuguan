@@ -280,7 +280,16 @@ export function normalizeBaseUrl(apiUrl) {
   return (apiUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
 }
 
-export async function streamOpenAIResponse({ apiKey, apiUrl, model, reasoningEffort, instructions, input, onDelta, maxOutputTokens, promptSettings, signal }) {
+function stringifyReasoningDelta(delta) {
+  if (typeof delta === "string") return delta;
+  if (delta && typeof delta === "object") {
+    if (typeof delta.text === "string") return delta.text;
+    if (typeof delta.delta === "string") return delta.delta;
+  }
+  return "";
+}
+
+export async function streamOpenAIResponse({ apiKey, apiUrl, model, reasoningEffort, instructions, input, onDelta, onThinkingDelta, maxOutputTokens, promptSettings, signal }) {
   const client = new OpenAI({
     apiKey,
     baseURL: normalizeBaseUrl(apiUrl)
@@ -300,7 +309,7 @@ export async function streamOpenAIResponse({ apiKey, apiUrl, model, reasoningEff
   }
   const normalizedReasoningEffort = normalizeReasoningEffort(reasoningEffort);
   if (normalizedReasoningEffort) {
-    request.reasoning = { effort: normalizedReasoningEffort };
+    request.reasoning = { effort: normalizedReasoningEffort, summary: "auto" };
   }
 
   const stream = await client.responses.create({
@@ -308,6 +317,7 @@ export async function streamOpenAIResponse({ apiKey, apiUrl, model, reasoningEff
   }, { signal });
 
   let text = "";
+  let thinking = "";
   let usage = null;
 
   for await (const event of stream) {
@@ -318,10 +328,27 @@ export async function streamOpenAIResponse({ apiKey, apiUrl, model, reasoningEff
       onDelta(event.delta);
     }
 
+    if (event.type === "response.reasoning_summary.delta" || event.type === "response.reasoning_summary_text.delta") {
+      const delta = stringifyReasoningDelta(event.delta);
+      if (delta) {
+        thinking += delta;
+        onThinkingDelta?.(delta);
+      }
+    }
+
+    if (event.type === "response.reasoning_summary.done" || event.type === "response.reasoning_summary_text.done") {
+      const doneText = String(event.text || "").trim();
+      if (doneText && !thinking.includes(doneText)) {
+        const delta = thinking ? `\n\n${doneText}` : doneText;
+        thinking += delta;
+        onThinkingDelta?.(delta);
+      }
+    }
+
     if (event.type === "response.completed") {
       usage = event.response?.usage || null;
     }
   }
 
-  return { text, usage };
+  return { text, thinking, usage };
 }

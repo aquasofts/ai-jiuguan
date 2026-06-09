@@ -403,6 +403,15 @@ button:active {
   box-shadow: 0 8px 22px rgba(27, 39, 54, 0.06);
 }
 
+.bubble.assistant:has(.thinking-panel) {
+  position: relative;
+  overflow: hidden;
+  border-color: #d8e6ef;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(246, 251, 249, 0.98)),
+    #fff;
+}
+
 .bubble-head {
   margin-bottom: 6px;
   color: #667587;
@@ -454,8 +463,202 @@ button:active {
   padding: 0;
 }
 
-.typing {
-  color: #64748b;
+.thinking-panel {
+  position: relative;
+  width: min(420px, 100%);
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  border: 1px solid #dce8ef;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f8fbfd 0%, #f5fbf5 48%, #fff8ef 100%);
+  color: #203143;
+  padding: 11px 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.thinking-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 0%, rgba(255, 255, 255, 0.86) 44%, transparent 72%);
+  transform: translateX(-110%);
+  animation: thinking-sheen 1800ms ease-in-out infinite;
+  pointer-events: none;
+}
+
+.thinking-panel.compact {
+  width: fit-content;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 7px 9px;
+}
+
+.thinking-mark {
+  position: relative;
+  z-index: 1;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #c9dce8;
+  border-radius: 8px;
+  background: #fff;
+  color: #116276;
+  box-shadow: 0 8px 18px rgba(17, 98, 118, 0.11);
+  animation: thinking-pulse 1500ms ease-in-out infinite;
+}
+
+.thinking-panel.compact .thinking-mark {
+  width: 28px;
+  height: 28px;
+}
+
+.thinking-copy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.thinking-copy strong {
+  display: block;
+  color: #203143;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.thinking-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.thinking-steps span {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(124, 166, 190, 0.42);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #4b6478;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+  animation: thinking-step 2100ms ease-in-out infinite;
+}
+
+.thinking-steps span:nth-child(2) {
+  animation-delay: 180ms;
+}
+
+.thinking-steps span:nth-child(3) {
+  animation-delay: 360ms;
+}
+
+.thinking-dots {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.thinking-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #d08a28;
+  animation: thinking-dot 1050ms ease-in-out infinite;
+}
+
+.thinking-dots span:nth-child(2) {
+  background: #116276;
+  animation-delay: 140ms;
+}
+
+.thinking-dots span:nth-child(3) {
+  background: #3c7a4a;
+  animation-delay: 280ms;
+}
+
+.streaming-markdown {
+  animation: stream-content-in 180ms ease both;
+}
+
+.stream-caret {
+  width: 8px;
+  height: 18px;
+  display: inline-block;
+  margin-left: 3px;
+  border-radius: 5px;
+  background: #d08a28;
+  vertical-align: -3px;
+  animation: stream-caret 780ms steps(2, start) infinite;
+}
+
+.thinking-trace {
+  width: min(560px, 100%);
+  margin-bottom: 12px;
+  overflow: hidden;
+  border: 1px solid #d8e6ef;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f8fbfd 0%, #f7fbf4 100%);
+  color: #203143;
+  animation: fade-up 180ms ease both;
+}
+
+.thinking-trace summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  color: #25556d;
+  padding: 0 11px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.thinking-trace summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-trace summary small {
+  margin-left: auto;
+  border: 1px solid rgba(208, 138, 40, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 248, 239, 0.82);
+  color: #9a611c;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.thinking-trace.streaming summary svg {
+  animation: thinking-pulse 1500ms ease-in-out infinite;
+}
+
+.thinking-trace-body {
+  border-top: 1px solid #e2ebf1;
+  color: #4b5f70;
+  padding: 10px 12px 12px;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.thinking-trace-body p {
+  margin-bottom: 8px;
+}
+
+.thinking-trace-body p:last-child {
+  margin-bottom: 0;
 }
 
 .attachment-list,
@@ -471,6 +674,7 @@ button:active {
 
 .attachment-chip,
 .pending-file {
+  min-width: 0;
   max-width: 100%;
   min-height: 30px;
   display: inline-flex;
@@ -487,7 +691,31 @@ button:active {
 .attachment-chip,
 .pending-file {
   overflow: hidden;
+}
+
+.attachment-chip svg,
+.pending-file svg {
+  flex: 0 0 auto;
+}
+
+.attachment-chip {
+  overflow-wrap: anywhere;
+}
+
+.file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
+.pending-file {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-file .file-name {
   white-space: nowrap;
 }
 
@@ -830,6 +1058,45 @@ button:active {
   .bubble.user,
   .bubble.assistant {
     padding: 12px 14px;
+  }
+
+  .thinking-panel {
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 9px;
+    padding: 10px;
+  }
+
+  .thinking-panel:not(.compact) .thinking-dots {
+    grid-column: 1 / -1;
+    justify-self: start;
+    padding-left: 42px;
+  }
+
+  .thinking-panel.compact {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+
+  .thinking-mark {
+    width: 34px;
+    height: 34px;
+  }
+
+  .thinking-steps {
+    gap: 5px;
+  }
+
+  .thinking-steps span {
+    min-height: 23px;
+    padding: 0 7px;
+  }
+
+  .thinking-trace {
+    width: 100%;
+  }
+
+  .thinking-trace summary {
+    min-height: 36px;
+    padding: 0 10px;
   }
 
   .bubble {
@@ -1298,6 +1565,76 @@ button:active {
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes thinking-sheen {
+  0% {
+    transform: translateX(-110%);
+  }
+  58%,
+  100% {
+    transform: translateX(110%);
+  }
+}
+
+@keyframes thinking-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 8px 18px rgba(17, 98, 118, 0.11);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 10px 24px rgba(17, 98, 118, 0.18);
+  }
+}
+
+@keyframes thinking-step {
+  0%,
+  100% {
+    border-color: rgba(124, 166, 190, 0.42);
+    color: #4b6478;
+    transform: translateY(0);
+  }
+  45% {
+    border-color: rgba(208, 138, 40, 0.42);
+    color: #8a5a1d;
+    transform: translateY(-1px);
+  }
+}
+
+@keyframes thinking-dot {
+  0%,
+  100% {
+    opacity: 0.38;
+    transform: translateY(0) scale(0.86);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1);
+  }
+}
+
+@keyframes stream-content-in {
+  from {
+    opacity: 0.68;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes stream-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
   }
 }
 

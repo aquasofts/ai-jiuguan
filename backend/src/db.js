@@ -116,6 +116,7 @@ function createSchema(db) {
       characterId TEXT NOT NULL,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
+      thinking TEXT,
       attachments TEXT,
       requestSnapshot TEXT,
       usage TEXT,
@@ -150,6 +151,7 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_billings_character ON billings(characterId, createdAt);
   `);
   ensureColumn(db, "messages", "attachments", "TEXT");
+  ensureColumn(db, "messages", "thinking", "TEXT");
   ensureColumn(db, "messages", "requestSnapshot", "TEXT");
   ensureColumn(db, "apiKeys", "reasoningEffort", "TEXT NOT NULL DEFAULT ''");
 }
@@ -240,8 +242,8 @@ function insertSnapshot(db, snapshot) {
     }
 
     const insertMessage = db.prepare(`
-      INSERT INTO messages (id, sessionId, userId, characterId, role, content, attachments, requestSnapshot, usage, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (id, sessionId, userId, characterId, role, content, thinking, attachments, requestSnapshot, usage, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const message of data.messages || []) {
       insertMessage.run(
@@ -251,6 +253,7 @@ function insertSnapshot(db, snapshot) {
         message.characterId,
         message.role,
         message.content || "",
+        message.thinking || "",
         message.attachments ? JSON.stringify(message.attachments) : null,
         message.requestSnapshot ? JSON.stringify(message.requestSnapshot) : null,
         message.usage ? JSON.stringify(message.usage) : null,

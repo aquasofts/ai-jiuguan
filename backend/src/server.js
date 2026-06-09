@@ -6,6 +6,7 @@ import multer from "multer";
 import { parseAttachmentBuffer } from "./attachment-parser.js";
 import { readDb, writeDb, seedDb, uid, now, publicUser, publicApiKey } from "./db.js";
 import { requireUser, requireAdmin, signUser, signAdmin } from "./auth.js";
+import { normalizeUploadFileName } from "./upload-filename.js";
 import {
   buildInstructions,
   buildModelInput,
@@ -270,10 +271,11 @@ app.post("/api/attachments/parse", requireUser, (req, res) => {
     if (!req.file) return res.status(400).json({ message: "缺少文件" });
 
     try {
+      const fileName = normalizeUploadFileName(req.file.originalname);
       const parsed = await parseAttachmentBuffer(req.file, { maxTextChars: maxAttachmentTextChars });
       return res.json({
         attachment: {
-          name: String(req.file.originalname || "未命名文件").slice(0, 180),
+          name: fileName,
           type: String(req.file.mimetype || parsed.type || "application/octet-stream").slice(0, 120),
           size: req.file.size,
           kind: parsed.kind,
@@ -387,6 +389,7 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
   });
 
   let assistantText = "";
+  let assistantThinking = "";
   let usage = null;
   let queueHeartbeat = null;
   const stopQueueHeartbeat = () => {
@@ -415,6 +418,17 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
       onDequeued: stopQueueHeartbeat
     }, async () => {
       if (!apiKey) {
+        const demoThinking = [
+          "已接收当前会话和附件元数据。",
+          "正在验证流式输出、Markdown 渲染和历史记录保存路径。",
+          "准备返回一段本地占位回复用于前端验收。"
+        ].join("\n");
+        for (const chunk of demoThinking.match(/.{1,14}/gs) || []) {
+          if (abortController.signal.aborted) throw Object.assign(new Error("请求已取消"), { code: "REQUEST_ABORTED" });
+          assistantThinking += chunk;
+          sendSse(res, "thinking", { delta: chunk });
+          await new Promise((resolve) => setTimeout(resolve, 24));
+        }
         const demo = "当前后端还没有配置 OpenAI API Key。这条回复用于验证 SSE 流式输出、Markdown 渲染、历史记录保存和余额检测流程。\n\n```js\nconsole.log('ai-tavern 已连接');\n```";
         for (const chunk of demo.match(/.{1,12}/gs) || []) {
           if (abortController.signal.aborted) throw Object.assign(new Error("请求已取消"), { code: "REQUEST_ABORTED" });
@@ -433,6 +447,10 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
           maxOutputTokens,
           promptSettings,
           signal: abortController.signal,
+          onThinkingDelta: (delta) => {
+            assistantThinking += delta;
+            sendSse(res, "thinking", { delta });
+          },
           onDelta: (delta) => {
             assistantText += delta;
             sendSse(res, "delta", { delta });
@@ -451,6 +469,7 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
       characterId: character.id,
       role: "assistant",
       content: assistantText,
+      thinking: assistantThinking,
       attachments: [],
       requestSnapshot,
       usage,

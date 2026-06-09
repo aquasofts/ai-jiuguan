@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import readExcelFile from "read-excel-file/browser";
-import { Bot, ChevronDown, FileText, LogIn, LogOut, Menu, MessageSquarePlus, Paperclip, Send, Sparkles, UserRound, WalletCards, X } from "lucide-react";
+import { Bot, BrainCircuit, ChevronDown, FileText, LogIn, LogOut, Menu, MessageSquarePlus, Paperclip, Send, Sparkles, UserRound, WalletCards, X } from "lucide-react";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:2255" : "");
@@ -15,6 +15,104 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_DATA_URL_CHARS = 1500000;
 const MAX_IMAGE_EDGE = 1600;
 const IMAGE_QUALITY = 0.82;
+const THINKING_STEPS = ["理解上下文", "读取附件", "组织回复"];
+
+function ThinkingPanel({ compact = false }) {
+  return (
+    <div className={`thinking-panel ${compact ? "compact" : ""}`} role="status" aria-label="AI 正在思考">
+      <div className="thinking-mark">
+        <BrainCircuit size={compact ? 16 : 20} />
+      </div>
+      <div className="thinking-copy">
+        <strong>{compact ? "正在继续生成" : "AI 正在思考"}</strong>
+        {!compact && (
+          <div className="thinking-steps">
+            {THINKING_STEPS.map((step) => (
+              <span key={step}>{step}</span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="thinking-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+    </div>
+  );
+}
+
+function splitThinkingContent(content = "") {
+  const source = String(content || "");
+  const thoughts = [];
+  let answer = "";
+  let cursor = 0;
+  const pattern = /<think\b[^>]*>([\s\S]*?)(<\/think>|$)/gi;
+  let match = pattern.exec(source);
+
+  while (match) {
+    answer += source.slice(cursor, match.index);
+    if (match[1].trim()) thoughts.push(match[1].trim());
+    cursor = match.index + match[0].length;
+    if (!match[2]) {
+      cursor = source.length;
+      break;
+    }
+    match = pattern.exec(source);
+  }
+
+  answer += source.slice(cursor);
+  return {
+    thoughts,
+    answer: answer.replace(/<\/?think\b[^>]*>/gi, "").trim()
+  };
+}
+
+function MarkdownContent({ children }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      code({ inline, children: codeChildren, ...props }) {
+        return inline ? <code {...props}>{codeChildren}</code> : <pre><code {...props}>{codeChildren}</code></pre>;
+      }
+    }}>
+      {children}
+    </ReactMarkdown>
+  );
+}
+
+function ThinkingTrace({ thoughts, streaming = false }) {
+  const text = thoughts.filter(Boolean).join("\n\n");
+  if (!text) return <ThinkingPanel compact />;
+
+  return (
+    <details className={`thinking-trace ${streaming ? "streaming" : ""}`} open>
+      <summary>
+        <BrainCircuit size={15} />
+        <span>思考过程</span>
+        {streaming && <small>生成中</small>}
+      </summary>
+      <div className="thinking-trace-body">
+        <MarkdownContent>{text}</MarkdownContent>
+      </div>
+    </details>
+  );
+}
+
+function MessageMarkdown({ message }) {
+  const parsed = message.role === "assistant"
+    ? splitThinkingContent(message.content)
+    : { thoughts: [], answer: String(message.content || "") };
+  const thoughts = [message.thinking, ...parsed.thoughts].filter((item) => String(item || "").trim());
+  const hasAnswer = Boolean(parsed.answer);
+
+  return (
+    <div className={message.loading ? "streaming-markdown" : ""}>
+      {thoughts.length > 0 && <ThinkingTrace thoughts={thoughts} streaming={message.loading && !hasAnswer} />}
+      {hasAnswer && <MarkdownContent>{parsed.answer}</MarkdownContent>}
+      {message.loading && <span className="stream-caret" aria-hidden="true" />}
+    </div>
+  );
+}
 
 function App() {
   const [token, setToken] = React.useState(localStorage.getItem("user_token") || "");
@@ -425,7 +523,7 @@ function App() {
       throw new Error(`${file.name} 超过 5MB，无法上传服务器解析`);
     }
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", file, file.name);
     const response = await fetch(`${API_BASE}/api/attachments/parse`, {
       method: "POST",
       headers: {
@@ -574,6 +672,7 @@ function App() {
       id: `stream_${Date.now()}`,
       role: "assistant",
       content: "",
+      thinking: "",
       loading: true,
       createdAt: new Date().toISOString()
     };
@@ -613,6 +712,9 @@ function App() {
           const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
           const dataLine = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
           const data = dataLine ? JSON.parse(dataLine) : {};
+          if (eventName === "thinking") {
+            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? { ...item, thinking: `${item.thinking || ""}${data.delta || ""}` } : item));
+          }
           if (eventName === "delta") {
             setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? { ...item, content: item.content + data.delta } : item));
           }
@@ -621,7 +723,7 @@ function App() {
             setMessages((items) => items.filter((item) => item.id !== localAssistantMessage.id));
           }
           if (eventName === "done") {
-            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? data.message : item));
+            setMessages((items) => items.map((item) => item.id === localAssistantMessage.id ? { ...data.message, thinking: data.message?.thinking || item.thinking || "" } : item));
             setUser((current) => current ? { ...current, balance: data.balance } : current);
           }
         }
@@ -751,27 +853,20 @@ function App() {
               <p>选择角色卡后发送消息；不同角色卡的会话历史会互相隔离。</p>
             </div>
           ) : messages.map((message) => {
-            const body = message.loading && !message.content ? <div className="typing">AI 正在回复...</div> : (
+            const body = message.loading && !message.content ? <ThinkingPanel /> : (
               <>
+                {message.loading && message.content && <ThinkingPanel compact />}
                 {message.attachments?.length > 0 && (
                   <div className="attachment-list">
                     {message.attachments.map((file) => (
                       <span className="attachment-chip" key={file.id || file.name}>
                         <FileText size={14} />
-                        {file.name}
+                        <span className="file-name">{file.name}</span>
                       </span>
                     ))}
                   </div>
                 )}
-                {message.content ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                    code({ inline, children, ...props }) {
-                      return inline ? <code {...props}>{children}</code> : <pre><code {...props}>{children}</code></pre>;
-                    }
-                  }}>
-                    {message.content}
-                  </ReactMarkdown>
-                ) : null}
+                {message.content || message.thinking ? <MessageMarkdown message={message} /> : null}
               </>
             );
 
@@ -797,7 +892,7 @@ function App() {
                 {attachments.map((file) => (
                   <span className="pending-file" key={file.id}>
                     <FileText size={14} />
-                    {file.name}
+                    <span className="file-name">{file.name}</span>
                     <button type="button" onClick={() => setAttachments((items) => items.filter((item) => item.id !== file.id))} aria-label={`移除 ${file.name}`}>
                       <X size={13} />
                     </button>

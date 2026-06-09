@@ -2,6 +2,7 @@ import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import readExcelFile from "read-excel-file/node";
+import { normalizeUploadFileName } from "./upload-filename.js";
 
 const serverParseableExtensions = new Set([".pdf", ".docx", ".xlsx"]);
 
@@ -48,7 +49,8 @@ export function canParseOnServer(fileName = "", mimeType = "") {
 }
 
 export async function parseAttachmentBuffer(file, { maxTextChars = 60000 } = {}) {
-  const extension = fileExtension(file.originalname);
+  const safeName = normalizeUploadFileName(file.originalname);
+  const extension = fileExtension(safeName);
   const mimeType = file.mimetype || "application/octet-stream";
 
   if (extension === ".pdf" || mimeType === "application/pdf") {
