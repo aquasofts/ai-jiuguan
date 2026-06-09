@@ -319,7 +319,7 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
     if (apiKey) await assertAdminCredentialSafety(db);
 
     if (!apiKey) {
-      const demo = "当前后端还没有配置 OpenAI API Key。这条回复用于验证 SSE 流式输出、Markdown 渲染、历史记录保存和余额检测流程。\n\n```js\nconsole.log('AI 酒馆已连接');\n```";
+      const demo = "当前后端还没有配置 OpenAI API Key。这条回复用于验证 SSE 流式输出、Markdown 渲染、历史记录保存和余额检测流程。\n\n```js\nconsole.log('ai-tavern 已连接');\n```";
       for (const chunk of demo.match(/.{1,12}/gs) || []) {
         assistantText += chunk;
         sendSse(res, "delta", { delta: chunk });

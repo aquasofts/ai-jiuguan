@@ -4,7 +4,15 @@
 
 ## 上传并部署
 
-把压缩包上传到服务器后执行：
+从 Git 克隆或把压缩包上传到服务器后执行：
+
+```bash
+git clone <repo-url> ai-tavern
+cd ai-tavern
+bash scripts/install-production-debian12.sh https://example.com --yes
+```
+
+如果使用压缩包：
 
 ```bash
 tar -xzf ai-tavern-deploy-20260609.tar.gz
@@ -18,7 +26,7 @@ bash scripts/install-production-debian12.sh
 - `example.com`
 - `https://example.com`
 
-脚本会安装 Node.js 22、Nginx、后端依赖，创建 systemd 服务，并把前端静态文件放到 Nginx 下。
+脚本会安装 Node.js 22、Nginx、依赖，缺少前端构建产物时自动构建，创建 systemd 服务，并把前端静态文件放到 Nginx 下。
 
 ## 访问地址
 

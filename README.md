@@ -1,6 +1,6 @@
-# AI 酒馆前后端分离项目
+# ai-tavern
 
-这是一个类似 AI 酒馆的前后端分离网站项目，包含：
+这是一个前后端分离的 ai-tavern 项目，包含：
 
 - `backend`：Node.js + Express 后端，提供用户、管理员、角色卡、API、账单、历史记录和 SSE 流式聊天接口。
 - `frontend-user`：用户聊天前端，左侧会话/角色卡菜单，右侧 Markdown 聊天区，支持上传文件与 AI 对话。
@@ -189,3 +189,20 @@ node scripts/security-reset.mjs "你的强密码至少12位"
 - 管理员密码不能是 `admin123`
 - 不要把 `backend/data/app.sqlite`、`backend/.env` 暴露到 Web 静态目录
 - API 地址支持 OpenAI 官方地址，也支持第三方兼容接口地址。请只填写你信任的服务商地址，避免 API Key 泄露。
+
+## 生产部署
+
+Debian 12 / Ubuntu 22.04+ 生产环境推荐使用：
+
+```bash
+sudo bash scripts/install-production-debian12.sh https://example.com --yes
+```
+
+脚本默认使用：
+
+- 后端目录：`/opt/ai-tavern/backend`
+- 静态文件目录：`/var/www/ai-tavern`
+- systemd 服务：`ai-tavern-backend`
+- Nginx 站点：`ai-tavern`
+
+如果从 Git 克隆部署，脚本会在服务器上自动执行 `npm ci` 和 `npm run build` 生成前端静态文件。

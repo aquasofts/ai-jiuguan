@@ -17,10 +17,26 @@ if [ "$major" -lt 22 ]; then
   exit 1
 fi
 
-if ! npm install; then
+install_dependencies() {
+  if [ -f package-lock.json ]; then
+    npm ci
+  else
+    npm install
+  fi
+}
+
+needs_security_reset() {
+  [ ! -f backend/.env ] && return 0
+  ! grep -Eq '^JWT_SECRET=.{32,}' backend/.env && return 0
+  grep -Eq '^JWT_SECRET=(please-generate-a-random-secret-at-least-32-chars|dev-secret-change-me|replace-with-a-long-random-string)$' backend/.env && return 0
+  grep -Eq '^ADMIN_PASSWORD=(please-change-this-admin-password|admin123)?$' backend/.env && return 0
+  return 1
+}
+
+if ! install_dependencies; then
   echo
-  echo "依赖安装失败。若看到 ENOTEMPTY，可执行下面命令后重试："
-  echo "  rm -rf node_modules package-lock.json"
+  echo "依赖安装失败。可清理依赖目录后重试："
+  echo "  rm -rf node_modules"
   echo "  bash scripts/deploy-mac.sh"
   exit 1
 fi
@@ -29,7 +45,7 @@ if [ ! -f backend/.env ]; then
   cp backend/.env.example backend/.env
 fi
 
-if ! grep -q '^JWT_SECRET=.\{32,\}' backend/.env || grep -q '^JWT_SECRET=please-generate-a-random-secret-at-least-32-chars' backend/.env || grep -q '^JWT_SECRET=dev-secret-change-me' backend/.env || grep -q '^ADMIN_PASSWORD=please-change-this-admin-password' backend/.env || grep -q '^ADMIN_PASSWORD=admin123' backend/.env; then
+if needs_security_reset; then
   npm run security:reset
 fi
 

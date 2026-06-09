@@ -116,7 +116,7 @@ function App() {
       <main className="login-page">
         <form className="login-panel" onSubmit={login}>
           <DatabaseZap size={34} />
-          <h1>AI 酒馆管理后台</h1>
+          <h1>ai-tavern 管理后台</h1>
           <input name="username" placeholder="管理员用户名" defaultValue="admin" required />
           <input name="password" type="password" placeholder="密码" required />
           {notice && <div className="alert">{notice}</div>}
@@ -130,7 +130,7 @@ function App() {
     <div className="admin-shell">
       <header className="admin-top">
         <div>
-          <strong>AI 酒馆管理后台</strong>
+          <strong>ai-tavern 管理后台</strong>
           <span>{admin?.username || "admin"}</span>
         </div>
         <nav>

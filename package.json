@@ -1,8 +1,8 @@
 {
-  "name": "ai-tavern-split-app",
+  "name": "ai-tavern",
   "private": true,
   "version": "0.1.0",
-  "description": "AI tavern style split frontend/backend project with user and admin portals.",
+  "description": "ai-tavern split frontend/backend project with user and admin portals.",
   "workspaces": [
     "backend",
     "frontend-user",

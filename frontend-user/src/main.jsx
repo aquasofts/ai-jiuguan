@@ -442,7 +442,7 @@ function App() {
         <div className="brand">
           <Bot size={24} />
           <div>
-            <strong>AI 酒馆</strong>
+            <strong>ai-tavern</strong>
             <span>{selectedCharacter?.name || "默认模型"}</span>
           </div>
         </div>
@@ -642,7 +642,7 @@ function App() {
         <div className={`mobile-menu-panel ${mobileMenuClosing ? "closing" : ""}`} id="mobile-navigation">
           <header className="mobile-menu-head">
             <div>
-              <strong>AI 酒馆</strong>
+              <strong>ai-tavern</strong>
               <span>{selectedCharacter?.name || "默认模型"}</span>
             </div>
             <button type="button" className="mobile-close" onClick={closeMobileMenu} aria-label="关闭菜单">

@@ -1,10 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ASSUME_YES="false"
+PUBLIC_ORIGIN_ARG=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -y|--yes)
+      ASSUME_YES="true"
+      shift
+      ;;
+    -h|--help)
+      echo "用法：sudo bash scripts/install-production-debian12.sh [公网访问地址] [--yes]"
+      echo "示例：sudo bash scripts/install-production-debian12.sh https://example.com --yes"
+      exit 0
+      ;;
+    *)
+      if [ -n "$PUBLIC_ORIGIN_ARG" ]; then
+        echo "未知参数：$1"
+        exit 1
+      fi
+      PUBLIC_ORIGIN_ARG="$1"
+      shift
+      ;;
+  esac
+done
+
 DEFAULT_PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-http://localhost}"
 APP_DIR="${APP_DIR:-/opt/ai-tavern}"
 WEB_DIR="${WEB_DIR:-/var/www/ai-tavern}"
 SERVICE_NAME="${SERVICE_NAME:-ai-tavern-backend}"
+APP_USER="${APP_USER:-ai-tavern}"
+NGINX_SITE_NAME="${NGINX_SITE_NAME:-ai-tavern}"
+BACKEND_PORT="${BACKEND_PORT:-2255}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "请使用 root 运行：sudo bash scripts/install-production-debian12.sh"
@@ -25,8 +53,8 @@ normalize_origin() {
   echo "$raw"
 }
 
-if [ -n "${1:-}" ]; then
-  PUBLIC_ORIGIN="$(normalize_origin "$1")"
+if [ -n "$PUBLIC_ORIGIN_ARG" ]; then
+  PUBLIC_ORIGIN="$(normalize_origin "$PUBLIC_ORIGIN_ARG")"
 else
   echo "请填写网站公网访问地址。"
   echo "示例：203.0.113.10、example.com、https://example.com"
@@ -43,13 +71,15 @@ case "$PUBLIC_ORIGIN" in
 esac
 
 echo "将使用公网访问地址：$PUBLIC_ORIGIN"
-read -r -p "确认继续部署？[Y/n]: " confirm_deploy
-case "$confirm_deploy" in
-  n|N|no|NO|No)
-    echo "已取消部署。"
-    exit 0
-    ;;
-esac
+if [ "$ASSUME_YES" != "true" ]; then
+  read -r -p "确认继续部署？[Y/n]: " confirm_deploy
+  case "$confirm_deploy" in
+    n|N|no|NO|No)
+      echo "已取消部署。"
+      exit 0
+      ;;
+  esac
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -64,8 +94,10 @@ need_file package.json
 need_file package-lock.json
 need_file backend/src/server.js
 need_file backend/.env.example
-need_file frontend-user/dist/index.html
-need_file frontend-admin/dist/index.html
+need_file frontend-user/package.json
+need_file frontend-user/index.html
+need_file frontend-admin/package.json
+need_file frontend-admin/index.html
 need_file scripts/security-reset.mjs
 
 echo "安装系统依赖..."
@@ -83,8 +115,17 @@ if [ "$node_major" -lt 22 ]; then
   apt-get install -y nodejs
 fi
 
-if ! id ai-tavern >/dev/null 2>&1; then
-  useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin ai-tavern
+if [ ! -f "$ROOT_DIR/frontend-user/dist/index.html" ] || [ ! -f "$ROOT_DIR/frontend-admin/dist/index.html" ]; then
+  echo "未找到前端构建产物，正在安装依赖并构建..."
+  cd "$ROOT_DIR"
+  npm ci
+  npm run build
+else
+  echo "已找到前端构建产物，跳过前端构建。"
+fi
+
+if ! id "$APP_USER" >/dev/null 2>&1; then
+  useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 fi
 
 echo "复制应用文件..."
@@ -114,7 +155,7 @@ set_env() {
   rm -f "$tmp"
 }
 
-set_env PORT "2255"
+set_env PORT "$BACKEND_PORT"
 set_env HOST "127.0.0.1"
 set_env USER_FRONTEND_ORIGIN "$PUBLIC_ORIGIN"
 set_env ADMIN_FRONTEND_ORIGIN "$PUBLIC_ORIGIN"
@@ -143,7 +184,7 @@ install -d "$WEB_DIR/user" "$WEB_DIR/admin"
 cp -a "$ROOT_DIR/frontend-user/dist/." "$WEB_DIR/user/"
 cp -a "$ROOT_DIR/frontend-admin/dist/." "$WEB_DIR/admin/"
 
-chown -R ai-tavern:ai-tavern "$APP_DIR"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 chmod 700 "$APP_DIR/backend/data"
 chmod 600 "$APP_DIR/backend/.env"
 chown -R www-data:www-data "$WEB_DIR"
@@ -151,13 +192,13 @@ chown -R www-data:www-data "$WEB_DIR"
 echo "写入 systemd 服务..."
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=AI Tavern backend
+Description=ai-tavern backend
 After=network.target
 
 [Service]
 Type=simple
-User=ai-tavern
-Group=ai-tavern
+User=${APP_USER}
+Group=${APP_USER}
 WorkingDirectory=${APP_DIR}/backend
 Environment=NODE_ENV=production
 Environment=NODE_OPTIONS=--max-old-space-size=256
@@ -175,7 +216,7 @@ WantedBy=multi-user.target
 EOF
 
 echo "写入 Nginx 配置..."
-cat > /etc/nginx/sites-available/ai-tavern <<EOF
+cat > "/etc/nginx/sites-available/${NGINX_SITE_NAME}" <<EOF
 server {
     listen 80;
     server_name _;
@@ -184,7 +225,7 @@ server {
     root ${WEB_DIR}/user;
 
     location /api/ {
-        proxy_pass http://127.0.0.1:2255/api/;
+        proxy_pass http://127.0.0.1:${BACKEND_PORT}/api/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -214,14 +255,29 @@ server {
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/ai-tavern /etc/nginx/sites-enabled/ai-tavern
+ln -sf "/etc/nginx/sites-available/${NGINX_SITE_NAME}" "/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
 
 echo "启动服务..."
 systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
+systemctl enable "$SERVICE_NAME"
+systemctl restart "$SERVICE_NAME"
 systemctl restart nginx
+
+if command -v curl >/dev/null 2>&1; then
+  for _ in $(seq 1 20); do
+    if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/health" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  if ! curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/health" >/dev/null 2>&1; then
+    echo "后端健康检查失败，请查看日志：journalctl -u ${SERVICE_NAME} -n 100 --no-pager"
+    exit 1
+  fi
+fi
 
 echo
 echo "部署完成。"
