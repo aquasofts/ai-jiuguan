@@ -14,6 +14,7 @@ import {
   mergePromptSettings,
   normalizeAttachments,
   normalizeClientContext,
+  normalizeReasoningEffort,
   summarizeAttachments,
   streamOpenAIResponse
 } from "./openai-response.js";
@@ -426,6 +427,7 @@ app.post("/api/chat/stream", requireUser, chatLimiter, async (req, res) => {
           apiKey,
           apiUrl: validatePublicBaseUrl(api?.apiUrl || process.env.OPENAI_BASE_URL),
           model: api?.model || process.env.OPENAI_MODEL || "gpt-5-mini",
+          reasoningEffort: api?.reasoningEffort || process.env.OPENAI_REASONING_EFFORT,
           instructions,
           input,
           maxOutputTokens,
@@ -745,6 +747,7 @@ app.post("/api/admin/apis", requireAdmin, async (req, res) => {
     model: sanitizeString(req.body.model || "gpt-5-mini", 100),
     apiUrl: validatePublicBaseUrl(req.body.apiUrl || "https://api.openai.com/v1"),
     apiKeySecret: sanitizeString(req.body.apiKeySecret, 1000),
+    reasoningEffort: normalizeReasoningEffort(req.body.reasoningEffort),
     enabled: req.body.enabled !== false,
     createdAt,
     updatedAt: createdAt
@@ -767,6 +770,7 @@ app.patch("/api/admin/apis/:id", requireAdmin, async (req, res) => {
   apiKey.name = req.body.name === undefined ? apiKey.name : sanitizeString(req.body.name, 80);
   apiKey.model = req.body.model === undefined ? apiKey.model : sanitizeString(req.body.model, 100);
   apiKey.apiUrl = req.body.apiUrl === undefined ? apiKey.apiUrl : validatePublicBaseUrl(req.body.apiUrl);
+  apiKey.reasoningEffort = req.body.reasoningEffort === undefined ? apiKey.reasoningEffort || "" : normalizeReasoningEffort(req.body.reasoningEffort);
   apiKey.enabled = req.body.enabled ?? apiKey.enabled;
   if (req.body.apiKeySecret) apiKey.apiKeySecret = sanitizeString(req.body.apiKeySecret, 1000);
   apiKey.updatedAt = now();

@@ -24,6 +24,13 @@ export const defaultPromptSettings = {
   promptCacheRetention: "in_memory"
 };
 
+const reasoningEfforts = new Set(["", "none", "minimal", "low", "medium", "high", "xhigh"]);
+
+export function normalizeReasoningEffort(value) {
+  const effort = String(value ?? "").trim().toLowerCase();
+  return reasoningEfforts.has(effort) ? effort : "";
+}
+
 export function mergePromptSettings(settings = {}) {
   return {
     ...defaultPromptSettings,
@@ -247,7 +254,8 @@ export function buildRequestSnapshot({ instructions, input, context, attachments
       apiKeyId: api?.id || "",
       apiName: api?.name || "",
       model: api?.model || "",
-      apiUrl: api?.apiUrl || ""
+      apiUrl: api?.apiUrl || "",
+      reasoningEffort: normalizeReasoningEffort(api?.reasoningEffort)
     },
     promptSettings: mergePromptSettings(promptSettings),
     character: character ? {
@@ -272,7 +280,7 @@ export function normalizeBaseUrl(apiUrl) {
   return (apiUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
 }
 
-export async function streamOpenAIResponse({ apiKey, apiUrl, model, instructions, input, onDelta, maxOutputTokens, promptSettings, signal }) {
+export async function streamOpenAIResponse({ apiKey, apiUrl, model, reasoningEffort, instructions, input, onDelta, maxOutputTokens, promptSettings, signal }) {
   const client = new OpenAI({
     apiKey,
     baseURL: normalizeBaseUrl(apiUrl)
@@ -289,6 +297,10 @@ export async function streamOpenAIResponse({ apiKey, apiUrl, model, instructions
   };
   if (settings.promptCacheRetention === "24h") {
     request.prompt_cache_retention = "24h";
+  }
+  const normalizedReasoningEffort = normalizeReasoningEffort(reasoningEffort);
+  if (normalizedReasoningEffort) {
+    request.reasoning = { effort: normalizedReasoningEffort };
   }
 
   const stream = await client.responses.create({

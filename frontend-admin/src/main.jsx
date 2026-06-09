@@ -32,8 +32,23 @@ const emptyApi = {
   model: "gpt-5-mini",
   apiUrl: "https://api.openai.com/v1",
   apiKeySecret: "",
+  reasoningEffort: "",
   enabled: true
 };
+
+const reasoningEffortOptions = [
+  { value: "", label: "模型默认" },
+  { value: "none", label: "None - 不启用推理" },
+  { value: "minimal", label: "Minimal - 最少思考" },
+  { value: "low", label: "Low - 轻度思考" },
+  { value: "medium", label: "Medium - 标准思考" },
+  { value: "high", label: "High - 深度思考" },
+  { value: "xhigh", label: "XHigh - 最强思考" }
+];
+
+function reasoningEffortLabel(value) {
+  return reasoningEffortOptions.find((option) => option.value === value)?.label || "模型默认";
+}
 
 function App() {
   const [path, setPath] = React.useState(window.location.pathname === "/" ? "/admin/login" : window.location.pathname);
@@ -608,6 +623,7 @@ function ApisPage({ request, setNotice }) {
               </div>
             </div>
             <div className="meta">模型：{api.model}</div>
+            <div className="meta">思考程度：{reasoningEffortLabel(api.reasoningEffort)}</div>
             <div className="meta">地址：{api.apiUrl}</div>
             <div className="actions">
               <button onClick={() => setEditing(api)}><Edit3 size={15} /> 编辑</button>
@@ -621,6 +637,12 @@ function ApisPage({ request, setNotice }) {
           <form className="form-grid" onSubmit={saveApi}>
             <label>API Key 名称<input name="name" defaultValue={editing.name} required /></label>
             <label>调用模型名称<input name="model" defaultValue={editing.model} required /></label>
+            <label>
+              模型思考程度
+              <select name="reasoningEffort" defaultValue={editing.reasoningEffort || ""}>
+                {reasoningEffortOptions.map((option) => <option key={option.value || "default"} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
             <label>API 地址<input name="apiUrl" defaultValue={editing.apiUrl} required /></label>
             <label>API Key 密文<input name="apiKeySecret" type="password" placeholder={editing.id ? "留空则不修改" : "sk-..."} /></label>
             <Toggle name="enabled" label="是否启用" defaultChecked={editing.enabled} />

@@ -77,6 +77,7 @@ function createSchema(db) {
       model TEXT NOT NULL,
       apiUrl TEXT NOT NULL,
       apiKeySecret TEXT,
+      reasoningEffort TEXT NOT NULL DEFAULT '',
       enabled INTEGER NOT NULL DEFAULT 1,
       createdAt TEXT NOT NULL,
       updatedAt TEXT
@@ -150,6 +151,7 @@ function createSchema(db) {
   `);
   ensureColumn(db, "messages", "attachments", "TEXT");
   ensureColumn(db, "messages", "requestSnapshot", "TEXT");
+  ensureColumn(db, "apiKeys", "reasoningEffort", "TEXT NOT NULL DEFAULT ''");
 }
 
 function ensureColumn(db, table, column, definition) {
@@ -199,11 +201,11 @@ function insertSnapshot(db, snapshot) {
     }
 
     const insertApi = db.prepare(`
-      INSERT INTO apiKeys (id, name, model, apiUrl, apiKeySecret, enabled, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO apiKeys (id, name, model, apiUrl, apiKeySecret, reasoningEffort, enabled, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const api of data.apiKeys || []) {
-      insertApi.run(api.id, api.name, api.model, api.apiUrl, api.apiKeySecret || "", bool(api.enabled !== false), api.createdAt || now(), api.updatedAt || null);
+      insertApi.run(api.id, api.name, api.model, api.apiUrl, api.apiKeySecret || "", api.reasoningEffort || "", bool(api.enabled !== false), api.createdAt || now(), api.updatedAt || null);
     }
 
     const insertCharacter = db.prepare(`
@@ -377,6 +379,7 @@ export async function seedDb() {
       model: process.env.OPENAI_MODEL || "gpt-5-mini",
       apiUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
       apiKeySecret: process.env.OPENAI_API_KEY || "",
+      reasoningEffort: process.env.OPENAI_REASONING_EFFORT || "",
       enabled: true,
       createdAt,
       updatedAt: createdAt
