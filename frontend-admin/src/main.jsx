@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { BarChart3, Bot, CreditCard, DatabaseZap, Edit3, History, KeyRound, LayoutDashboard, LogOut, Plus, Save, Search, SlidersHorizontal, Trash2, Users } from "lucide-react";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:2255";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:2255" : "");
 const routes = [
   { path: "/admin/dashboard", label: "首页", icon: LayoutDashboard },
   { path: "/admin/users", label: "用户管理", icon: Users },
@@ -118,7 +118,7 @@ function App() {
           <DatabaseZap size={34} />
           <h1>AI 酒馆管理后台</h1>
           <input name="username" placeholder="管理员用户名" defaultValue="admin" required />
-          <input name="password" type="password" placeholder="密码" defaultValue="admin123" required />
+          <input name="password" type="password" placeholder="密码" required />
           {notice && <div className="alert">{notice}</div>}
           <button><KeyRound size={18} /> 登录</button>
         </form>

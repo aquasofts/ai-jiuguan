@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { Bot, ChevronDown, FileText, LogIn, LogOut, Menu, MessageSquarePlus, Paperclip, Send, Sparkles, UserRound, WalletCards, X } from "lucide-react";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:2255";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:2255" : "");
 const MAX_ATTACHMENTS = 5;
 const MAX_ATTACHMENT_BYTES = 750 * 1024;
 const MAX_ATTACHMENT_TEXT_CHARS = 60000;
@@ -22,18 +22,54 @@ function App() {
   const [attachments, setAttachments] = React.useState([]);
   const [avatarOpen, setAvatarOpen] = React.useState(false);
   const [characterOpen, setCharacterOpen] = React.useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
+  const [mobileMenuClosing, setMobileMenuClosing] = React.useState(false);
   const [authOpen, setAuthOpen] = React.useState(false);
   const [authMode, setAuthMode] = React.useState("login");
   const [authNotice, setAuthNotice] = React.useState("");
   const [streaming, setStreaming] = React.useState(false);
   const [notice, setNotice] = React.useState("");
+  const [dragActive, setDragActive] = React.useState(false);
   const messagesEndRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
+  const dragDepthRef = React.useRef(0);
 
   const selectedCharacter = characters.find((item) => item.id === selectedCharacterId) || characters[0];
+  const mobileMenuVisible = mobileMenuOpen || mobileMenuClosing;
+
+  function formatSessionTime(value) {
+    if (!value) return "刚刚";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "刚刚";
+    return date.toLocaleString([], {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  }
+
+  function openMobileMenu() {
+    setAvatarOpen(false);
+    setCharacterOpen(false);
+    setMobileMenuClosing(false);
+    setMobileMenuOpen(true);
+  }
+
+  function closeMobileMenu() {
+    if (!mobileMenuVisible) return;
+    setMobileMenuOpen(false);
+    setMobileMenuClosing(true);
+  }
+
+  function hideMobileMenuNow() {
+    setMobileMenuOpen(false);
+    setMobileMenuClosing(false);
+  }
 
   function openAuthModal(mode = "login") {
     setAvatarOpen(false);
+    hideMobileMenuNow();
     setAuthNotice("");
     setNotice("");
     setAuthMode(mode);
@@ -43,6 +79,26 @@ function App() {
   React.useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, streaming]);
+
+  React.useEffect(() => {
+    if (!mobileMenuClosing) return undefined;
+    const timeout = window.setTimeout(() => setMobileMenuClosing(false), 190);
+    return () => window.clearTimeout(timeout);
+  }, [mobileMenuClosing]);
+
+  React.useEffect(() => {
+    if (!mobileMenuVisible) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function handleKeyDown(event) {
+      if (event.key === "Escape") closeMobileMenu();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileMenuVisible]);
 
   const request = React.useCallback(async (path, options = {}) => {
     const response = await fetch(`${API_BASE}${path}`, {
@@ -141,12 +197,20 @@ function App() {
     setCurrentSession(data.session);
     setMessages(data.messages);
     setSessions((items) => [data.session, ...items]);
+    closeMobileMenu();
   }
 
   async function openSession(session) {
     const data = await request(`/api/sessions/${session.id}/messages`);
     setCurrentSession(data.session);
     setMessages(data.messages);
+    closeMobileMenu();
+  }
+
+  function selectCharacter(characterId) {
+    setSelectedCharacterId(characterId);
+    setCharacterOpen(false);
+    closeMobileMenu();
   }
 
   function collectClientContext() {
@@ -209,12 +273,74 @@ function App() {
     });
   }
 
-  async function handleFiles(event) {
-    const files = Array.from(event.target.files || []);
-    event.target.value = "";
-    if (!files.length) return;
-    const next = await Promise.all(files.slice(0, MAX_ATTACHMENTS).map(readAttachment));
+  async function queueFiles(files) {
+    const selected = Array.from(files || []).filter(Boolean);
+    if (!selected.length) return false;
+    const slots = Math.max(0, MAX_ATTACHMENTS - attachments.length);
+    if (!slots) {
+      setNotice(`最多支持 ${MAX_ATTACHMENTS} 个附件`);
+      return true;
+    }
+    const next = await Promise.all(selected.slice(0, slots).map(readAttachment));
     setAttachments((items) => [...items, ...next].slice(0, MAX_ATTACHMENTS));
+    setNotice(selected.length > slots ? `已添加前 ${slots} 个附件` : "");
+    return true;
+  }
+
+  function getTransferFiles(dataTransfer) {
+    const items = Array.from(dataTransfer?.items || []);
+    const files = items
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    return files.length ? files : Array.from(dataTransfer?.files || []);
+  }
+
+  function hasTransferFiles(dataTransfer) {
+    const types = Array.from(dataTransfer?.types || []);
+    const items = Array.from(dataTransfer?.items || []);
+    return types.includes("Files") || items.some((item) => item.kind === "file") || Boolean(dataTransfer?.files?.length);
+  }
+
+  async function handleFiles(event) {
+    await queueFiles(event.target.files);
+    event.target.value = "";
+  }
+
+  function handleDragEnter(event) {
+    if (!hasTransferFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragOver(event) {
+    if (!hasTransferFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event) {
+    if (!hasTransferFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  }
+
+  async function handleDrop(event) {
+    const files = getTransferFiles(event.dataTransfer);
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    if (!files.length) return;
+    await queueFiles(files);
+  }
+
+  async function handlePaste(event) {
+    const files = getTransferFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    await queueFiles(files);
   }
 
   async function sendMessage(event) {
@@ -352,10 +478,7 @@ function App() {
                   <button
                     key={character.id}
                     className={character.id === selectedCharacterId ? "chosen" : ""}
-                    onClick={() => {
-                      setSelectedCharacterId(character.id);
-                      setCharacterOpen(false);
-                    }}
+                    onClick={() => selectCharacter(character.id)}
                   >
                     <strong>{character.name}</strong>
                     {character.usePrice && <span>{Number(character.price || 0).toFixed(2)} / 次</span>}
@@ -371,14 +494,31 @@ function App() {
         </div>
       </aside>
 
-      <main className="chat">
+      <main
+        className={`chat ${dragActive ? "dragging" : ""}`}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onPaste={handlePaste}
+      >
         <header className="topbar">
-          <div>
+          <button
+            className="mobile-menu-trigger"
+            type="button"
+            onClick={openMobileMenu}
+            aria-label="打开菜单"
+            aria-expanded={mobileMenuVisible}
+            aria-controls="mobile-navigation"
+          >
+            <Menu size={22} />
+          </button>
+          <div className="topbar-title">
             <h1>{selectedCharacter?.name || "默认模型"}</h1>
-            <p>Markdown、代码块、SSE 流式输出和云端历史记录已启用</p>
+            <p>{currentSession?.title || "新对话"}</p>
           </div>
           <div className="avatar-wrap">
-            <button className="avatar" onClick={() => setAvatarOpen((open) => !open)}>
+            <button className="avatar" onClick={() => setAvatarOpen((open) => !open)} aria-label="用户">
               <UserRound size={21} />
             </button>
             {avatarOpen && (
@@ -411,38 +551,47 @@ function App() {
               <h2>开始一场新的对话</h2>
               <p>选择角色卡后发送消息；不同角色卡的会话历史会互相隔离。</p>
             </div>
-          ) : messages.map((message) => (
-            <article className={`bubble ${message.role}`} key={message.id}>
-              <div className="bubble-head">{message.role === "user" ? "你" : selectedCharacter?.name || "AI"}</div>
-              {message.loading && !message.content ? <div className="typing">AI 正在回复...</div> : (
-                <>
-                  {message.attachments?.length > 0 && (
-                    <div className="attachment-list">
-                      {message.attachments.map((file) => (
-                        <span className="attachment-chip" key={file.id || file.name}>
-                          <FileText size={14} />
-                          {file.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {message.content ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                      code({ inline, children, ...props }) {
-                        return inline ? <code {...props}>{children}</code> : <pre><code {...props}>{children}</code></pre>;
-                      }
-                    }}>
-                      {message.content}
-                    </ReactMarkdown>
-                  ) : null}
-                </>
-              )}
-            </article>
-          ))}
+          ) : messages.map((message) => {
+            const body = message.loading && !message.content ? <div className="typing">AI 正在回复...</div> : (
+              <>
+                {message.attachments?.length > 0 && (
+                  <div className="attachment-list">
+                    {message.attachments.map((file) => (
+                      <span className="attachment-chip" key={file.id || file.name}>
+                        <FileText size={14} />
+                        {file.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {message.content ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                    code({ inline, children, ...props }) {
+                      return inline ? <code {...props}>{children}</code> : <pre><code {...props}>{children}</code></pre>;
+                    }
+                  }}>
+                    {message.content}
+                  </ReactMarkdown>
+                ) : null}
+              </>
+            );
+
+            return message.role === "user" ? (
+              <article className="message user" key={message.id}>
+                <div className="bubble-head">你</div>
+                <div className="bubble user">{body}</div>
+              </article>
+            ) : (
+              <article className="bubble assistant" key={message.id}>
+                <div className="bubble-head">{selectedCharacter?.name || "AI"}</div>
+                {body}
+              </article>
+            );
+          })}
           <div className="messages-end" ref={messagesEndRef} />
         </section>
 
-        <form className="composer" onSubmit={sendMessage}>
+        <form className={`composer ${attachments.length ? "has-files" : ""}`} onSubmit={sendMessage}>
           <div className="composer-box">
             {attachments.length > 0 && (
               <div className="pending-files">
@@ -466,7 +615,7 @@ function App() {
                   event.currentTarget.form.requestSubmit();
                 }
               }}
-              placeholder={token ? "输入消息，Enter 发送，Shift + Enter 换行" : "登录后开始聊天"}
+              placeholder={token ? "输入消息" : "登录后开始聊天"}
             />
           </div>
           <input ref={fileInputRef} className="file-input" type="file" multiple onChange={handleFiles} />
@@ -477,7 +626,86 @@ function App() {
             <Send size={18} />
           </button>
         </form>
+
+        {dragActive && (
+          <div className="drop-overlay" aria-live="polite">
+            <div className="drop-target">
+              <FileText size={26} />
+              <strong>松手添加文件</strong>
+              <span>最多 {MAX_ATTACHMENTS} 个附件</span>
+            </div>
+          </div>
+        )}
       </main>
+
+      {mobileMenuVisible && (
+        <div className={`mobile-menu-panel ${mobileMenuClosing ? "closing" : ""}`} id="mobile-navigation">
+          <header className="mobile-menu-head">
+            <div>
+              <strong>AI 酒馆</strong>
+              <span>{selectedCharacter?.name || "默认模型"}</span>
+            </div>
+            <button type="button" className="mobile-close" onClick={closeMobileMenu} aria-label="关闭菜单">
+              <X size={22} />
+            </button>
+          </header>
+
+          <div className="mobile-menu-body">
+            <button className="mobile-new-chat" onClick={newChat}>
+              <MessageSquarePlus size={19} />
+              <span>新建聊天</span>
+            </button>
+
+            <section className="mobile-menu-section">
+              <div className="mobile-section-title">历史记录</div>
+              <div className="mobile-list">
+                {token ? sessions.length ? sessions.map((session) => (
+                    <button
+                      className={`mobile-list-item ${currentSession?.id === session.id ? "active" : ""}`}
+                      key={session.id}
+                      onClick={() => openSession(session)}
+                    >
+                      <MessageSquarePlus size={17} />
+                      <span>
+                        <strong>{session.title}</strong>
+                        <small>{formatSessionTime(session.updatedAt)}</small>
+                      </span>
+                    </button>
+                  )) : (
+                    <div className="mobile-empty">
+                      <Sparkles size={18} />
+                      暂无历史记录
+                    </div>
+                  ) : (
+                  <div className="mobile-empty">
+                    <Sparkles size={18} />
+                    登录后同步历史记录
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section className="mobile-menu-section">
+              <div className="mobile-section-title">角色卡管理</div>
+              <div className="mobile-role-list">
+                {characters.map((character) => (
+                  <button
+                    key={character.id}
+                    className={`mobile-role-card ${character.id === selectedCharacterId ? "chosen" : ""}`}
+                    onClick={() => selectCharacter(character.id)}
+                  >
+                    <span>
+                      <strong>{character.name}</strong>
+                      {character.usePrice && <em>{Number(character.price || 0).toFixed(2)} / 次</em>}
+                    </span>
+                    {character.id === selectedCharacterId && <small>当前</small>}
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
 
       {authOpen && (
         <div className="modal-backdrop auth-backdrop" onMouseDown={() => setAuthOpen(false)}>

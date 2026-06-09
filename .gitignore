@@ -4,3 +4,10 @@ frontend-admin/dist/
 backend/data/
 backend/.env
 .DS_Store
+*.tar.gz
+*.tgz
+*.zip
+*.log
+*.sqlite
+*.sqlite3
+*.db
